@@ -4,6 +4,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
 <title>Browser Linux Sandbox</title>
 
 <link
@@ -34,10 +35,6 @@ body {
 
 <script type="module">
 
-/* =========================================
-   IMPORTS
-========================================= */
-
 import {
     Terminal
 } from "https://esm.sh/@xterm/xterm@5.4.0";
@@ -49,12 +46,12 @@ import {
 import {
     initBashkit,
     Bash
-} from "https://esm.sh/@everruns/bashkit-wasm@0.18.0";
+} from "https://esm.sh/@everruns/bashkit-wasm";
 
 
-/* =========================================
-   TERMINAL
-========================================= */
+/* =========================================================
+   XTERM
+========================================================= */
 
 const terminalElement =
     document.getElementById("terminal");
@@ -110,9 +107,9 @@ window.addEventListener(
 );
 
 
-/* =========================================
+/* =========================================================
    BASH
-========================================= */
+========================================================= */
 
 let bash = null;
 
@@ -126,137 +123,593 @@ let historyIndex = -1;
 
 let currentDirectory = "~";
 
-
-/* =========================================
-   INDEXEDDB
-========================================= */
-
-const DB_NAME =
-    "BrowserLinuxSandbox";
-
-const DB_VERSION =
-    1;
-
-const STORE_NAME =
-    "sandbox";
-
-const SNAPSHOT_KEY =
-    "bashkit-snapshot";
+let saveTimer = null;
 
 
-function openDatabase() {
+/* =========================================================
+   OPFS
+=========================================================
 
-    return new Promise(
-        (resolve, reject) => {
+   Browser storage layout:
 
-            const request =
-                indexedDB.open(
-                    DB_NAME,
-                    DB_VERSION
-                );
+   OPFS
+   └── bashkit-sandbox
+       ├── manifest.json
+       └── files
+           ├── home/
+           │   └── user/
+           │       └── ...
+           └── ...
+========================================================= */
 
-            request.onupgradeneeded =
-                event => {
+const OPFS_ROOT =
+    "bashkit-sandbox";
 
-                    const db =
-                        event.target.result;
+const MANIFEST_FILE =
+    "manifest.json";
 
-                    if (
-                        !db.objectStoreNames.contains(
-                            STORE_NAME
-                        )
-                    ) {
+const FILES_DIRECTORY =
+    "files";
 
-                        db.createObjectStore(
-                            STORE_NAME
-                        );
-                    }
-                };
 
-            request.onsuccess =
-                () => resolve(
-                    request.result
-                );
+/* =========================================================
+   OPFS HELPERS
+========================================================= */
 
-            request.onerror =
-                () => reject(
-                    request.error
-                );
+async function getOPFSRoot() {
+
+    if (
+        !navigator.storage ||
+        !navigator.storage.getDirectory
+    ) {
+
+        throw new Error(
+            "This browser does not support the Origin Private File System (OPFS)."
+        );
+    }
+
+    return await navigator.storage.getDirectory();
+}
+
+
+async function getSandboxDirectory(
+    create = true
+) {
+
+    const root =
+        await getOPFSRoot();
+
+    return await root.getDirectoryHandle(
+        OPFS_ROOT,
+        {
+            create
         }
     );
 }
 
 
-/* =========================================
-   SAVE SANDBOX
-========================================= */
+async function getFilesDirectory(
+    create = true
+) {
 
-async function saveSandbox() {
+    const sandbox =
+        await getSandboxDirectory(
+            create
+        );
+
+    return await sandbox.getDirectoryHandle(
+        FILES_DIRECTORY,
+        {
+            create
+        }
+    );
+}
+
+
+/* =========================================================
+   BASE64
+========================================================= */
+
+function stringToBase64(
+    value
+) {
+
+    const bytes =
+        new TextEncoder().encode(
+            value
+        );
+
+    let binary = "";
+
+    const chunkSize = 0x8000;
+
+    for (
+        let i = 0;
+        i < bytes.length;
+        i += chunkSize
+    ) {
+
+        const chunk =
+            bytes.subarray(
+                i,
+                Math.min(
+                    i + chunkSize,
+                    bytes.length
+                )
+            );
+
+        binary += String.fromCharCode(
+            ...chunk
+        );
+    }
+
+    return btoa(binary);
+}
+
+
+function base64ToString(
+    value
+) {
+
+    const binary =
+        atob(value);
+
+    const bytes =
+        new Uint8Array(
+            binary.length
+        );
+
+    for (
+        let i = 0;
+        i < binary.length;
+        i++
+    ) {
+
+        bytes[i] =
+            binary.charCodeAt(i);
+    }
+
+    return new TextDecoder().decode(
+        bytes
+    );
+}
+
+
+/* =========================================================
+   PATH HELPERS
+========================================================= */
+
+function normalizeVFSPath(
+    path
+) {
+
+    if (!path) {
+        return "/";
+    }
+
+    path =
+        path.replace(
+            /\\/g,
+            "/"
+        );
+
+    if (
+        !path.startsWith("/")
+    ) {
+
+        path =
+            "/" + path;
+    }
+
+    path =
+        path.replace(
+            /\/+/g,
+            "/"
+        );
+
+    if (
+        path.length > 1 &&
+        path.endsWith("/")
+    ) {
+
+        path =
+            path.slice(
+                0,
+                -1
+            );
+    }
+
+    return path;
+}
+
+
+function pathParts(
+    path
+) {
+
+    path =
+        normalizeVFSPath(
+            path
+        );
+
+    return path
+        .split("/")
+        .filter(
+            part => part.length > 0
+        );
+}
+
+
+/* =========================================================
+   OPFS PATH ACCESS
+========================================================= */
+
+async function getOPFSDirectoryForPath(
+    path,
+    create = true
+) {
+
+    const parts =
+        pathParts(path);
+
+    const root =
+        await getFilesDirectory(
+            create
+        );
+
+    let directory =
+        root;
+
+    /*
+     * All VFS paths are stored beneath
+     * the OPFS "files" directory.
+     */
+
+    for (
+        const part of parts
+    ) {
+
+        directory =
+            await directory.getDirectoryHandle(
+                part,
+                {
+                    create
+                }
+            );
+    }
+
+    return directory;
+}
+
+
+async function getOPFSParentDirectory(
+    path,
+    create = true
+) {
+
+    const normalized =
+        normalizeVFSPath(
+            path
+        );
+
+    const parts =
+        pathParts(
+            normalized
+        );
+
+    const filename =
+        parts.pop();
+
+
+    let directory =
+        await getFilesDirectory(
+            create
+        );
+
+
+    for (
+        const part of parts
+    ) {
+
+        directory =
+            await directory.getDirectoryHandle(
+                part,
+                {
+                    create
+                }
+            );
+    }
+
+
+    return {
+        directory,
+        filename
+    };
+}
+
+
+/* =========================================================
+   SAVE ONE FILE TO OPFS
+========================================================= */
+
+async function saveFileToOPFS(
+    path,
+    content
+) {
+
+    const {
+        directory,
+        filename
+    } =
+        await getOPFSParentDirectory(
+            path,
+            true
+        );
+
+
+    const file =
+        await directory.getFileHandle(
+            filename,
+            {
+                create: true
+            }
+        );
+
+
+    const writable =
+        await file.createWritable();
+
+
+    await writable.write(
+        content
+    );
+
+
+    await writable.close();
+}
+
+
+/* =========================================================
+   READ ONE FILE FROM OPFS
+========================================================= */
+
+async function readFileFromOPFS(
+    path
+) {
+
+    const {
+        directory,
+        filename
+    } =
+        await getOPFSParentDirectory(
+            path,
+            false
+        );
+
+
+    const file =
+        await directory.getFileHandle(
+            filename
+        );
+
+
+    const data =
+        await file.getFile();
+
+
+    return await data.text();
+}
+
+
+/* =========================================================
+   DELETE OPFS TREE
+========================================================= */
+
+async function deleteOPFSDirectory(
+    directory
+) {
+
+    const entries = [];
+
+    for await (
+        const [name, handle]
+        of directory.entries()
+    ) {
+
+        entries.push({
+            name,
+            handle
+        });
+    }
+
+
+    for (
+        const entry
+        of entries
+    ) {
+
+        if (
+            entry.handle.kind === "directory"
+        ) {
+
+            await deleteOPFSDirectory(
+                entry.handle
+            );
+
+            await directory.removeEntry(
+                entry.name,
+                {
+                    recursive: true
+                }
+            );
+
+        } else {
+
+            await directory.removeEntry(
+                entry.name
+            );
+        }
+    }
+}
+
+
+/* =========================================================
+   GET ALL BASHKIT FILES
+========================================================= */
+
+function collectVFSFiles(
+    path = "/",
+    files = []
+) {
+
+    const entries =
+        bash.readDir(
+            path
+        );
+
+
+    for (
+        const entry
+        of entries
+    ) {
+
+        const childPath =
+            path === "/"
+                ? "/" + entry.name
+                : path + "/" + entry.name;
+
+
+        if (
+            entry.metadata.fileType ===
+            "directory"
+        ) {
+
+            collectVFSFiles(
+                childPath,
+                files
+            );
+
+        } else {
+
+            files.push(
+                childPath
+            );
+        }
+    }
+
+
+    return files;
+}
+
+
+/* =========================================================
+   SAVE BASHKIT FILESYSTEM
+========================================================= */
+
+async function saveFilesystem() {
 
     if (!bash) {
         return false;
     }
 
+
     try {
 
+        const files =
+            collectVFSFiles(
+                "/"
+            );
+
+
+        const manifest = {
+            version: 1,
+            savedAt:
+                new Date().toISOString(),
+            files: []
+        };
+
+
         /*
-         * Bashkit 0.18.0 exposes snapshot()
-         * as a Uint8Array.
+         * Save every file from Bashkit's
+         * virtual filesystem into OPFS.
          */
 
-        const snapshot =
-            bash.snapshot();
+        for (
+            const path
+            of files
+        ) {
 
+            try {
 
-        const db =
-            await openDatabase();
-
-
-        await new Promise(
-            (resolve, reject) => {
-
-                const transaction =
-                    db.transaction(
-                        STORE_NAME,
-                        "readwrite"
-                    );
-
-                const store =
-                    transaction.objectStore(
-                        STORE_NAME
+                const content =
+                    bash.readFile(
+                        path
                     );
 
 
-                /*
-                 * Store the Uint8Array directly.
-                 */
-
-                store.put(
-                    snapshot,
-                    SNAPSHOT_KEY
+                await saveFileToOPFS(
+                    path,
+                    content
                 );
 
 
-                transaction.oncomplete =
-                    () => resolve();
+                manifest.files.push({
+                    path,
+                    encoding: "utf-8"
+                });
 
+            } catch (error) {
 
-                transaction.onerror =
-                    () => reject(
-                        transaction.error
-                    );
+                console.warn(
+                    "Could not save:",
+                    path,
+                    error
+                );
             }
+        }
+
+
+        /*
+         * Save the manifest.
+         */
+
+        const sandbox =
+            await getSandboxDirectory(
+                true
+            );
+
+
+        const manifestHandle =
+            await sandbox.getFileHandle(
+                MANIFEST_FILE,
+                {
+                    create: true
+                }
+            );
+
+
+        const writable =
+            await manifestHandle.createWritable();
+
+
+        await writable.write(
+            JSON.stringify(
+                manifest,
+                null,
+                2
+            )
         );
 
 
-        db.close();
+        await writable.close();
+
 
         return true;
 
     } catch (error) {
 
         console.error(
-            "Save failed:",
+            "OPFS save failed:",
             error
         );
 
@@ -265,149 +718,184 @@ async function saveSandbox() {
 }
 
 
-/* =========================================
-   LOAD SANDBOX
-========================================= */
+/* =========================================================
+   LOAD BASHKIT FILESYSTEM
+========================================================= */
 
-async function loadSandbox() {
+async function loadFilesystem() {
 
     try {
 
-        const db =
-            await openDatabase();
-
-
-        const snapshot =
-            await new Promise(
-                (resolve, reject) => {
-
-                    const transaction =
-                        db.transaction(
-                            STORE_NAME,
-                            "readonly"
-                        );
-
-                    const store =
-                        transaction.objectStore(
-                            STORE_NAME
-                        );
-
-
-                    const request =
-                        store.get(
-                            SNAPSHOT_KEY
-                        );
-
-
-                    request.onsuccess =
-                        () => resolve(
-                            request.result
-                        );
-
-
-                    request.onerror =
-                        () => reject(
-                            request.error
-                        );
-                }
+        const sandbox =
+            await getSandboxDirectory(
+                false
             );
 
 
-        db.close();
+        const manifestHandle =
+            await sandbox.getFileHandle(
+                MANIFEST_FILE
+            );
 
 
-        if (!snapshot) {
+        const manifestFile =
+            await manifestHandle.getFile();
+
+
+        const manifestText =
+            await manifestFile.text();
+
+
+        const manifest =
+            JSON.parse(
+                manifestText
+            );
+
+
+        if (
+            !manifest.files ||
+            !Array.isArray(
+                manifest.files
+            )
+        ) {
+
             return false;
         }
 
 
         /*
-         * Restore the complete shell state
-         * and virtual filesystem.
+         * Restore every saved file
+         * into Bashkit's VFS.
          */
 
-        bash.restoreSnapshot(
-            snapshot
-        );
+        for (
+            const item
+            of manifest.files
+        ) {
+
+            try {
+
+                const content =
+                    await readFileFromOPFS(
+                        item.path
+                    );
+
+
+                bash.writeFile(
+                    item.path,
+                    content
+                );
+
+            } catch (error) {
+
+                console.warn(
+                    "Could not restore:",
+                    item.path,
+                    error
+                );
+            }
+        }
 
 
         return true;
 
     } catch (error) {
 
+        /*
+         * FileNotFound means this is simply
+         * the first visit.
+         */
+
+        if (
+            error.name ===
+            "NotFoundError"
+        ) {
+
+            return false;
+        }
+
+
         console.error(
-            "Restore failed:",
+            "OPFS restore failed:",
             error
         );
+
 
         return false;
     }
 }
 
 
-/* =========================================
-   DELETE SANDBOX
-========================================= */
+/* =========================================================
+   DELETE SAVED SANDBOX
+========================================================= */
 
-async function deleteSandbox() {
+async function deleteSavedSandbox() {
 
     try {
 
-        const db =
-            await openDatabase();
+        const root =
+            await getOPFSRoot();
 
 
-        await new Promise(
-            (resolve, reject) => {
-
-                const transaction =
-                    db.transaction(
-                        STORE_NAME,
-                        "readwrite"
-                    );
-
-                const store =
-                    transaction.objectStore(
-                        STORE_NAME
-                    );
-
-
-                store.delete(
-                    SNAPSHOT_KEY
-                );
-
-
-                transaction.oncomplete =
-                    () => resolve();
-
-
-                transaction.onerror =
-                    () => reject(
-                        transaction.error
-                    );
+        await root.removeEntry(
+            OPFS_ROOT,
+            {
+                recursive: true
             }
         );
 
 
-        db.close();
-
         return true;
 
     } catch (error) {
 
+        if (
+            error.name ===
+            "NotFoundError"
+        ) {
+
+            return true;
+        }
+
+
         console.error(
-            "Delete failed:",
+            "OPFS delete failed:",
             error
         );
+
 
         return false;
     }
 }
 
 
-/* =========================================
+/* =========================================================
+   AUTO SAVE
+========================================================= */
+
+function scheduleSave() {
+
+    clearTimeout(
+        saveTimer
+    );
+
+
+    saveTimer =
+        setTimeout(
+            async () => {
+
+                await saveFilesystem();
+
+            },
+            300
+        );
+}
+
+
+/* =========================================================
    PROMPT
-========================================= */
+========================================================= */
 
 function updatePrompt() {
 
@@ -472,11 +960,13 @@ function writePrompt() {
 }
 
 
-/* =========================================
+/* =========================================================
    OUTPUT
-========================================= */
+========================================================= */
 
-function writeOutput(text) {
+function writeOutput(
+    text
+) {
 
     if (!text) {
         return;
@@ -518,7 +1008,8 @@ function writeOutput(text) {
 
 
         if (
-            i < lines.length - 1
+            i <
+            lines.length - 1
         ) {
 
             term.write(
@@ -529,10 +1020,6 @@ function writeOutput(text) {
 }
 
 
-/* =========================================
-   NEW LINE
-========================================= */
-
 function newLine() {
 
     term.write(
@@ -541,9 +1028,9 @@ function newLine() {
 }
 
 
-/* =========================================
+/* =========================================================
    INITIALIZE
-========================================= */
+========================================================= */
 
 async function start() {
 
@@ -572,60 +1059,36 @@ async function start() {
 
 
         /*
-         * Check that the loaded Bashkit
-         * actually supports persistence.
+         * Create basic directories.
          */
 
-        if (
-            typeof bash.snapshot !== "function"
-        ) {
-
-            throw new Error(
-                "This Bashkit build does not expose snapshot(). Loaded version: 0.18.0"
-            );
-        }
+        bash.executeSync(
+            "mkdir -p /home/user"
+        );
 
 
-        if (
-            typeof bash.restoreSnapshot !== "function"
-        ) {
-
-            throw new Error(
-                "This Bashkit build does not expose restoreSnapshot()."
-            );
-        }
+        bash.executeSync(
+            "cd /home/user"
+        );
 
 
         /*
-         * Try restoring saved browser state.
+         * Restore files from OPFS.
          */
 
         const restored =
-            await loadSandbox();
+            await loadFilesystem();
 
 
         if (restored) {
 
             term.write(
-                "\x1b[32mSandbox restored from browser storage.\x1b[0m\r\n"
+                "\x1b[32mSandbox files restored from browser storage.\x1b[0m\r\n"
             );
 
         } else {
 
-            /*
-             * Create the initial home directory.
-             */
-
-            bash.executeSync(
-                "mkdir -p /home/user"
-            );
-
-            bash.executeSync(
-                "cd /home/user"
-            );
-
-
-            await saveSandbox();
+            await saveFilesystem();
 
 
             term.write(
@@ -651,6 +1114,7 @@ async function start() {
 
 
         writePrompt();
+
 
         term.focus();
 
@@ -679,11 +1143,13 @@ async function start() {
 }
 
 
-/* =========================================
+/* =========================================================
    SPECIAL COMMANDS
-========================================= */
+========================================================= */
 
-async function specialCommand(command) {
+async function specialCommand(
+    command
+) {
 
     const trimmed =
         command.trim();
@@ -710,11 +1176,11 @@ async function specialCommand(command) {
         );
 
         term.writeln(
-            "  save       Save sandbox now"
+            "  save       Save files now"
         );
 
         term.writeln(
-            "  reset      Delete saved sandbox"
+            "  reset      Delete saved files"
         );
 
         term.writeln(
@@ -739,20 +1205,21 @@ async function specialCommand(command) {
 
         newLine();
 
+
         const saved =
-            await saveSandbox();
+            await saveFilesystem();
 
 
         if (saved) {
 
             term.writeln(
-                "\x1b[32mSandbox saved to this browser.\x1b[0m"
+                "\x1b[32mFiles saved to browser storage.\x1b[0m"
             );
 
         } else {
 
             term.writeln(
-                "\x1b[31mSandbox could not be saved.\x1b[0m"
+                "\x1b[31mCould not save files.\x1b[0m"
             );
         }
 
@@ -772,7 +1239,7 @@ async function specialCommand(command) {
         newLine();
 
         term.writeln(
-            "\x1b[33mThis will delete the saved browser sandbox.\x1b[0m"
+            "\x1b[33mThis will delete the saved browser filesystem.\x1b[0m"
         );
 
         term.writeln(
@@ -793,16 +1260,27 @@ async function specialCommand(command) {
 
         newLine();
 
-        await deleteSandbox();
+
+        const deleted =
+            await deleteSavedSandbox();
 
 
-        term.writeln(
-            "\x1b[32mSaved sandbox deleted.\x1b[0m"
-        );
+        if (deleted) {
 
-        term.writeln(
-            "\x1b[90mReload the page to create a fresh sandbox.\x1b[0m"
-        );
+            term.writeln(
+                "\x1b[32mSaved browser filesystem deleted.\x1b[0m"
+            );
+
+            term.writeln(
+                "\x1b[90mReload the page to create a fresh sandbox.\x1b[0m"
+            );
+
+        } else {
+
+            term.writeln(
+                "\x1b[31mCould not delete saved filesystem.\x1b[0m"
+            );
+        }
 
 
         writePrompt();
@@ -833,11 +1311,13 @@ async function specialCommand(command) {
 }
 
 
-/* =========================================
+/* =========================================================
    EXECUTE
-========================================= */
+========================================================= */
 
-async function executeCommand(command) {
+async function executeCommand(
+    command
+) {
 
     if (!bash) {
         return;
@@ -881,7 +1361,7 @@ async function executeCommand(command) {
 
 
     /*
-     * Built-in browser commands.
+     * Built-in commands.
      */
 
     if (
@@ -903,7 +1383,7 @@ async function executeCommand(command) {
 
 
         /*
-         * Finish the typed command line.
+         * Finish command line.
          */
 
         newLine();
@@ -957,8 +1437,7 @@ async function executeCommand(command) {
 
 
         /*
-         * Always put the next prompt
-         * on its own line.
+         * Keep prompt separated.
          */
 
         newLine();
@@ -968,17 +1447,11 @@ async function executeCommand(command) {
 
 
         /*
-         * Persist everything:
-         *
-         * - files
-         * - directories
-         * - environment
-         * - variables
-         * - aliases
-         * - current directory
+         * Save filesystem after
+         * every successful command.
          */
 
-        await saveSandbox();
+        scheduleSave();
 
 
         writePrompt();
@@ -998,14 +1471,15 @@ async function executeCommand(command) {
 
         newLine();
 
+
         writePrompt();
     }
 }
 
 
-/* =========================================
-   INPUT
-========================================= */
+/* =========================================================
+   KEYBOARD INPUT
+========================================================= */
 
 term.onData(
     async data => {
@@ -1156,7 +1630,7 @@ term.onData(
 
 
         /*
-         * Ignore other escape sequences.
+         * Ignore escape sequences.
          */
 
         if (
@@ -1172,7 +1646,8 @@ term.onData(
          */
 
         for (
-            const character of data
+            const character
+            of data
         ) {
 
             if (
@@ -1195,9 +1670,9 @@ term.onData(
 );
 
 
-/* =========================================
+/* =========================================================
    HISTORY UP
-========================================= */
+========================================================= */
 
 function historyUp() {
 
@@ -1232,9 +1707,9 @@ function historyUp() {
 }
 
 
-/* =========================================
+/* =========================================================
    HISTORY DOWN
-========================================= */
+========================================================= */
 
 function historyDown() {
 
@@ -1273,11 +1748,13 @@ function historyDown() {
 }
 
 
-/* =========================================
+/* =========================================================
    REPLACE INPUT
-========================================= */
+========================================================= */
 
-function replaceInput(text) {
+function replaceInput(
+    text
+) {
 
     while (
         inputBuffer.length > 0
@@ -1306,9 +1783,9 @@ function replaceInput(text) {
 }
 
 
-/* =========================================
+/* =========================================================
    START
-========================================= */
+========================================================= */
 
 start();
 
