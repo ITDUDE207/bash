@@ -1,398 +1,552 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bash Sandbox</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <style>
-    * {
-      box-sizing: border-box;
-    }
+<title>Bash Sandbox</title>
 
-    html,
-    body {
-      margin: 0;
-      width: 100%;
-      height: 100%;
-      background: #000;
-      overflow: hidden;
-      font-family: monospace;
-    }
+<style>
+* {
+    box-sizing: border-box;
+}
 
-    #terminal {
-      width: 100%;
-      height: 100%;
-      padding: 18px;
-      overflow-y: auto;
-      color: #eee;
-      background: #000;
-      cursor: text;
-    }
+html,
+body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    font-family: Consolas, "Courier New", monospace;
+}
 
-    .line {
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
+body {
+    color: #eee;
+}
 
-    .prompt {
-      color: #00ff66;
-    }
+#terminal {
+    width: 100%;
+    height: 100%;
+    padding: 18px;
+    overflow-y: auto;
+    background: #000;
+    cursor: text;
+    font-size: 15px;
+    line-height: 1.5;
+}
 
-    .error {
-      color: #ff5555;
-    }
+.line {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    padding: 0;
+}
 
-    .info {
-      color: #aaa;
-    }
+.info {
+    color: #aaa;
+}
 
-    #inputLine {
-      display: flex;
-      align-items: flex-start;
-    }
+.error {
+    color: #ff5555;
+}
 
-    #prompt {
-      color: #00ff66;
-      white-space: nowrap;
-    }
+.success {
+    color: #00ff66;
+}
 
-    #commandInput {
-      flex: 1;
-      background: transparent;
-      border: none;
-      outline: none;
-      color: #fff;
-      font: inherit;
-      padding: 0;
-      margin: 0;
-    }
-  </style>
+#inputLine {
+    display: flex;
+    align-items: baseline;
+    margin: 0;
+    padding: 0;
+}
+
+#prompt {
+    color: #00ff66;
+    white-space: nowrap;
+}
+
+#commandInput {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #fff;
+    font: inherit;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+}
+
+#commandInput::selection {
+    background: #444;
+}
+</style>
 </head>
 
 <body>
 
-<div id="terminal">
-
-  <div class="line info">
-    Bash Sandbox
-  </div>
-
-  <div class="line info">
-    Powered by Bashkit WebAssembly
-  </div>
-
-  <div class="line info">
-    Type "help" to get started.
-  </div>
-
-  <br>
-
-  <div id="output"></div>
-
-  <div id="inputLine">
-
-    <span id="prompt">
-      user@sandbox:~$
-    </span>
-
-    &nbsp;
-
-    <input
-      id="commandInput"
-      autocomplete="off"
-      autocorrect="off"
-      autocapitalize="off"
-      spellcheck="false"
-      autofocus
-    >
-
-  </div>
-
-</div>
-
+<div id="terminal"><div class="line info">Bash Sandbox</div><div class="line info">Powered by Bashkit WebAssembly</div><div class="line info">Type "help" to get started.</div><br><div id="output"></div><div id="inputLine"><span id="prompt">user@sandbox:~$</span><span>&nbsp;</span><input id="commandInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" autofocus></div></div>
 
 <script type="module">
 
 import {
-  initBashkit,
-  Bash
+    initBashkit,
+    Bash
 } from "https://esm.sh/@everruns/bashkit-wasm";
 
 
 /*
- * ----------------------------------------
  * TERMINAL ELEMENTS
- * ----------------------------------------
  */
 
 const terminal =
-  document.getElementById("terminal");
+    document.getElementById("terminal");
 
 const output =
-  document.getElementById("output");
+    document.getElementById("output");
 
 const input =
-  document.getElementById("commandInput");
+    document.getElementById("commandInput");
 
 const prompt =
-  document.getElementById("prompt");
+    document.getElementById("prompt");
 
 
 /*
- * ----------------------------------------
- * INITIALIZE BASHKIT
- * ----------------------------------------
+ * BASHKIT INSTANCE
  */
 
 let bash = null;
 
+
+/*
+ * COMMAND HISTORY
+ */
+
+let commandHistory = [];
+
+let historyIndex = -1;
+
+
+/*
+ * INITIALIZE BASHKIT
+ */
+
 async function start() {
 
-  try {
+    try {
 
-    await initBashkit();
+        await initBashkit();
 
-    bash = new Bash();
+        bash = new Bash();
 
-    /*
-     * Create a useful starting environment.
-     */
+        /*
+         * Create the user's home directory.
+         */
 
-    bash.executeSync(`
-      export USER=user
-      export HOME=/home/user
-      export SHELL=/bin/bash
-      mkdir -p /home/user
-      cd /home/user
-    `);
+        bash.executeSync(`
+            export USER=user
+            export HOME=/home/user
+            export SHELL=/bin/bash
+            export PATH=/usr/local/bin:/usr/bin:/bin
+            mkdir -p /home/user
+            cd /home/user
+        `);
 
-    print(
-      "Bashkit WASM initialized.",
-      "info"
-    );
+        print(
+            "Bashkit WASM initialized.",
+            "success"
+        );
 
-    input.focus();
+        print(
+            "Sandbox ready.",
+            "info"
+        );
 
-  } catch (error) {
+        input.focus();
 
-    print(
-      "Failed to initialize Bashkit:",
-      "error"
-    );
+    } catch (error) {
 
-    print(
-      error.message,
-      "error"
-    );
-  }
+        print(
+            "Failed to initialize Bashkit.",
+            "error"
+        );
+
+        print(
+            error.message,
+            "error"
+        );
+    }
 }
 
 
 /*
- * ----------------------------------------
  * EXECUTE COMMAND
- * ----------------------------------------
  */
 
 function executeCommand(command) {
 
-  if (!bash) {
+    if (!bash) {
 
-    print(
-      "Bashkit is still loading...",
-      "error"
-    );
+        print(
+            "Bashkit is still loading...",
+            "error"
+        );
 
-    return;
-  }
-
-  /*
-   * Show command.
-   */
-
-  print(
-    prompt.textContent +
-    " " +
-    command
-  );
-
-
-  if (!command.trim()) {
-    return;
-  }
-
-
-  try {
-
-    const result =
-      bash.executeSync(command);
-
-
-    /*
-     * STDOUT
-     */
-
-    if (result.stdout) {
-
-      print(
-        result.stdout
-      );
+        return;
     }
 
 
     /*
-     * STDERR
+     * Display command.
      */
 
-    if (result.stderr) {
+    printCommand(command);
 
-      print(
-        result.stderr,
-        "error"
-      );
+
+    /*
+     * Empty command.
+     */
+
+    if (!command.trim()) {
+
+        return;
     }
 
 
     /*
-     * Exit status
+     * Add to history.
      */
 
-    if (
-      typeof result.exitCode === "number" &&
-      result.exitCode !== 0
-    ) {
+    commandHistory.push(command);
 
-      print(
-        "[exit code " +
-        result.exitCode +
-        "]",
-        "error"
-      );
-    }
+    historyIndex = -1;
 
 
     /*
-     * Update prompt if directory changed.
+     * Special browser-side clear command.
      */
 
-    updatePrompt();
+    if (command.trim() === "clear") {
+
+        output.innerHTML = "";
+
+        return;
+    }
 
 
-  } catch (error) {
+    try {
 
-    print(
-      "Execution error: " +
-      error.message,
-      "error"
-    );
-  }
+        /*
+         * Execute inside Bashkit.
+         */
+
+        const result =
+            bash.executeSync(command);
+
+
+        /*
+         * STDOUT
+         */
+
+        if (result.stdout) {
+
+            print(
+                result.stdout
+            );
+        }
+
+
+        /*
+         * STDERR
+         */
+
+        if (result.stderr) {
+
+            print(
+                result.stderr,
+                "error"
+            );
+        }
+
+
+        /*
+         * Exit code
+         */
+
+        if (
+            typeof result.exitCode === "number" &&
+            result.exitCode !== 0
+        ) {
+
+            print(
+                "[exit code " +
+                result.exitCode +
+                "]",
+                "error"
+            );
+        }
+
+
+        /*
+         * Update prompt.
+         */
+
+        updatePrompt();
+
+    } catch (error) {
+
+        print(
+            "Execution error: " +
+            error.message,
+            "error"
+        );
+    }
+
+
+    scrollTerminal();
 }
 
 
 /*
- * ----------------------------------------
+ * DISPLAY COMMAND
+ */
+
+function printCommand(command) {
+
+    const line =
+        document.createElement("div");
+
+    line.className =
+        "line";
+
+    const promptText =
+        document.createElement("span");
+
+    promptText.className =
+        "prompt";
+
+    promptText.textContent =
+        prompt.textContent + " ";
+
+
+    const commandText =
+        document.createElement("span");
+
+    commandText.textContent =
+        command;
+
+
+    line.appendChild(promptText);
+    line.appendChild(commandText);
+
+    output.appendChild(line);
+}
+
+
+/*
+ * DISPLAY OUTPUT
+ */
+
+function print(
+    text,
+    type = ""
+) {
+
+    const line =
+        document.createElement("div");
+
+    line.className =
+        "line " + type;
+
+    line.textContent =
+        text;
+
+    output.appendChild(line);
+
+    scrollTerminal();
+}
+
+
+/*
  * UPDATE PROMPT
- * ----------------------------------------
  */
 
 function updatePrompt() {
 
-  try {
+    try {
 
-    const result =
-      bash.executeSync("pwd");
+        const result =
+            bash.executeSync("pwd");
 
-    const cwd =
-      result.stdout.trim();
+        const cwd =
+            result.stdout.trim();
 
-    prompt.textContent =
-      "user@sandbox:" +
-      (
-        cwd === "/home/user"
-          ? "~"
-          : cwd
-      ) +
-      "$";
 
-  } catch {
+        let displayPath;
 
-    prompt.textContent =
-      "user@sandbox:~$";
-  }
+
+        if (cwd === "/home/user") {
+
+            displayPath = "~";
+
+        } else if (
+            cwd.startsWith("/home/user/")
+        ) {
+
+            displayPath =
+                "~" +
+                cwd.substring(
+                    "/home/user".length
+                );
+
+        } else {
+
+            displayPath = cwd;
+        }
+
+
+        prompt.textContent =
+            "user@sandbox:" +
+            displayPath +
+            "$";
+
+    } catch {
+
+        prompt.textContent =
+            "user@sandbox:~$";
+    }
 }
 
 
 /*
- * ----------------------------------------
- * PRINT
- * ----------------------------------------
- */
-
-function print(
-  text,
-  type = ""
-) {
-
-  const line =
-    document.createElement("div");
-
-  line.className =
-    "line " + type;
-
-  line.textContent =
-    text;
-
-  output.appendChild(line);
-
-  terminal.scrollTop =
-    terminal.scrollHeight;
-}
-
-
-/*
- * ----------------------------------------
- * ENTER
- * ----------------------------------------
+ * KEYBOARD INPUT
  */
 
 input.addEventListener(
-  "keydown",
-  function(event) {
+    "keydown",
+    function(event) {
 
-    if (event.key === "Enter") {
 
-      const command =
-        input.value;
+        /*
+         * ENTER
+         */
 
-      input.value = "";
+        if (event.key === "Enter") {
 
-      executeCommand(command);
+            const command =
+                input.value;
 
+            input.value = "";
+
+            executeCommand(command);
+
+            return;
+        }
+
+
+        /*
+         * ARROW UP
+         */
+
+        if (event.key === "ArrowUp") {
+
+            if (
+                commandHistory.length === 0
+            ) {
+                return;
+            }
+
+
+            if (
+                historyIndex <
+                commandHistory.length - 1
+            ) {
+
+                historyIndex++;
+            }
+
+
+            input.value =
+                commandHistory[
+                    commandHistory.length -
+                    1 -
+                    historyIndex
+                ];
+
+            event.preventDefault();
+
+            return;
+        }
+
+
+        /*
+         * ARROW DOWN
+         */
+
+        if (event.key === "ArrowDown") {
+
+            if (historyIndex > 0) {
+
+                historyIndex--;
+
+                input.value =
+                    commandHistory[
+                        commandHistory.length -
+                        1 -
+                        historyIndex
+                    ];
+
+            } else {
+
+                historyIndex = -1;
+
+                input.value = "";
+            }
+
+            event.preventDefault();
+
+            return;
+        }
+
+
+        /*
+         * CTRL + L
+         */
+
+        if (
+            event.ctrlKey &&
+            event.key.toLowerCase() === "l"
+        ) {
+
+            output.innerHTML = "";
+
+            event.preventDefault();
+
+            return;
+        }
     }
-
-  }
 );
 
 
 /*
- * ----------------------------------------
- * KEEP FOCUS
- * ----------------------------------------
+ * KEEP INPUT FOCUSED
  */
 
 terminal.addEventListener(
-  "click",
-  function() {
-    input.focus();
-  }
+    "click",
+    function() {
+
+        input.focus();
+
+    }
 );
 
 
 /*
- * ----------------------------------------
- * START
- * ----------------------------------------
+ * START BASHKIT
  */
 
 start();
