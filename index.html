@@ -6,7 +6,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Browser Linux Sandbox</title>
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.4.0/css/xterm.css">
+<link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.4.0/css/xterm.css"
+>
 
 <style>
 html,
@@ -31,6 +34,10 @@ body {
 
 <script type="module">
 
+/* =========================================
+   IMPORTS
+========================================= */
+
 import {
     Terminal
 } from "https://esm.sh/@xterm/xterm@5.4.0";
@@ -42,7 +49,7 @@ import {
 import {
     initBashkit,
     Bash
-} from "https://esm.sh/@everruns/bashkit-wasm";
+} from "https://esm.sh/@everruns/bashkit-wasm@0.18.0";
 
 
 /* =========================================
@@ -88,7 +95,6 @@ const term =
         }
     });
 
-
 const fitAddon =
     new FitAddon();
 
@@ -105,15 +111,17 @@ window.addEventListener(
 
 
 /* =========================================
-   BASHKIT
+   BASH
 ========================================= */
 
 let bash = null;
+
 let ready = false;
 
 let inputBuffer = "";
 
 let history = [];
+
 let historyIndex = -1;
 
 let currentDirectory = "~";
@@ -186,16 +194,23 @@ function openDatabase() {
 async function saveSandbox() {
 
     if (!bash) {
-        return;
+        return false;
     }
 
     try {
 
+        /*
+         * Bashkit 0.18.0 exposes snapshot()
+         * as a Uint8Array.
+         */
+
         const snapshot =
             bash.snapshot();
 
+
         const db =
             await openDatabase();
+
 
         await new Promise(
             (resolve, reject) => {
@@ -211,13 +226,20 @@ async function saveSandbox() {
                         STORE_NAME
                     );
 
+
+                /*
+                 * Store the Uint8Array directly.
+                 */
+
                 store.put(
                     snapshot,
                     SNAPSHOT_KEY
                 );
 
+
                 transaction.oncomplete =
-                    resolve;
+                    () => resolve();
+
 
                 transaction.onerror =
                     () => reject(
@@ -226,7 +248,10 @@ async function saveSandbox() {
             }
         );
 
+
         db.close();
+
+        return true;
 
     } catch (error) {
 
@@ -234,6 +259,8 @@ async function saveSandbox() {
             "Save failed:",
             error
         );
+
+        return false;
     }
 }
 
@@ -248,6 +275,7 @@ async function loadSandbox() {
 
         const db =
             await openDatabase();
+
 
         const snapshot =
             await new Promise(
@@ -264,15 +292,18 @@ async function loadSandbox() {
                             STORE_NAME
                         );
 
+
                     const request =
                         store.get(
                             SNAPSHOT_KEY
                         );
 
+
                     request.onsuccess =
                         () => resolve(
                             request.result
                         );
+
 
                     request.onerror =
                         () => reject(
@@ -281,15 +312,24 @@ async function loadSandbox() {
                 }
             );
 
+
         db.close();
+
 
         if (!snapshot) {
             return false;
         }
 
+
+        /*
+         * Restore the complete shell state
+         * and virtual filesystem.
+         */
+
         bash.restoreSnapshot(
             snapshot
         );
+
 
         return true;
 
@@ -316,6 +356,7 @@ async function deleteSandbox() {
         const db =
             await openDatabase();
 
+
         await new Promise(
             (resolve, reject) => {
 
@@ -330,12 +371,15 @@ async function deleteSandbox() {
                         STORE_NAME
                     );
 
+
                 store.delete(
                     SNAPSHOT_KEY
                 );
 
+
                 transaction.oncomplete =
-                    resolve;
+                    () => resolve();
+
 
                 transaction.onerror =
                     () => reject(
@@ -344,7 +388,10 @@ async function deleteSandbox() {
             }
         );
 
+
         db.close();
+
+        return true;
 
     } catch (error) {
 
@@ -352,6 +399,8 @@ async function deleteSandbox() {
             "Delete failed:",
             error
         );
+
+        return false;
     }
 }
 
@@ -366,13 +415,18 @@ function updatePrompt() {
         return;
     }
 
+
     try {
 
         const result =
-            bash.executeSync("pwd");
+            bash.executeSync(
+                "pwd"
+            );
+
 
         const cwd =
             result.stdout.trim();
+
 
         if (
             cwd === "/home/user"
@@ -382,7 +436,9 @@ function updatePrompt() {
                 "~";
 
         } else if (
-            cwd.startsWith("/home/user/")
+            cwd.startsWith(
+                "/home/user/"
+            )
         ) {
 
             currentDirectory =
@@ -417,7 +473,7 @@ function writePrompt() {
 
 
 /* =========================================
-   CLEAN OUTPUT
+   OUTPUT
 ========================================= */
 
 function writeOutput(text) {
@@ -426,9 +482,6 @@ function writeOutput(text) {
         return;
     }
 
-    /*
-     * Normalize line endings.
-     */
 
     text =
         text.replace(
@@ -436,19 +489,13 @@ function writeOutput(text) {
             "\n"
         );
 
+
     text =
         text.replace(
             /\r/g,
             "\n"
         );
 
-
-    /*
-     * Write each line individually.
-     *
-     * This guarantees the prompt never
-     * gets stuck directly after output.
-     */
 
     const lines =
         text.split("\n");
@@ -470,11 +517,6 @@ function writeOutput(text) {
         }
 
 
-        /*
-         * Don't add a duplicate newline
-         * after the final empty element.
-         */
-
         if (
             i < lines.length - 1
         ) {
@@ -487,12 +529,11 @@ function writeOutput(text) {
 }
 
 
-/*
- * Make sure the cursor is at the
- * beginning of a fresh terminal line.
- */
+/* =========================================
+   NEW LINE
+========================================= */
 
-function ensureNewLine() {
+function newLine() {
 
     term.write(
         "\r\n"
@@ -510,13 +551,54 @@ async function start() {
         "\x1b[90mStarting Browser Linux Sandbox...\x1b[0m\r\n"
     );
 
+
     try {
 
         await initBashkit();
 
-        bash =
-            new Bash();
 
+        bash =
+            new Bash({
+                username: "user",
+                hostname: "sandbox",
+                cwd: "/home/user",
+
+                env: {
+                    USER: "user",
+                    HOME: "/home/user",
+                    SHELL: "/bin/bash"
+                }
+            });
+
+
+        /*
+         * Check that the loaded Bashkit
+         * actually supports persistence.
+         */
+
+        if (
+            typeof bash.snapshot !== "function"
+        ) {
+
+            throw new Error(
+                "This Bashkit build does not expose snapshot(). Loaded version: 0.18.0"
+            );
+        }
+
+
+        if (
+            typeof bash.restoreSnapshot !== "function"
+        ) {
+
+            throw new Error(
+                "This Bashkit build does not expose restoreSnapshot()."
+            );
+        }
+
+
+        /*
+         * Try restoring saved browser state.
+         */
 
         const restored =
             await loadSandbox();
@@ -530,27 +612,21 @@ async function start() {
 
         } else {
 
+            /*
+             * Create the initial home directory.
+             */
+
             bash.executeSync(
-                'export USER="user"'
+                "mkdir -p /home/user"
             );
 
             bash.executeSync(
-                'export HOME="/home/user"'
+                "cd /home/user"
             );
 
-            bash.executeSync(
-                'export SHELL="/bin/bash"'
-            );
-
-            bash.executeSync(
-                'mkdir -p /home/user'
-            );
-
-            bash.executeSync(
-                'cd /home/user'
-            );
 
             await saveSandbox();
+
 
             term.write(
                 "\x1b[32mNew sandbox created.\x1b[0m\r\n"
@@ -560,12 +636,14 @@ async function start() {
 
         updatePrompt();
 
+
         ready = true;
 
 
         term.write(
             "\x1b[90mFiles are automatically saved in this browser.\x1b[0m\r\n"
         );
+
 
         term.write(
             "\x1b[90mType \"help\" for commands.\x1b[0m\r\n\r\n"
@@ -583,6 +661,7 @@ async function start() {
             "\r\n\x1b[31mBashkit initialization failed.\x1b[0m\r\n"
         );
 
+
         term.write(
             "\x1b[31m" +
             error.name +
@@ -591,7 +670,11 @@ async function start() {
             "\x1b[0m\r\n"
         );
 
-        console.error(error);
+
+        console.error(
+            "Bashkit initialization error:",
+            error
+        );
     }
 }
 
@@ -606,22 +689,28 @@ async function specialCommand(command) {
         command.trim();
 
 
+    /* HELP */
+
     if (
         trimmed === "help"
     ) {
 
-        ensureNewLine();
+        newLine();
 
         term.writeln(
-            "\x1b[36mBrowser Sandbox Commands\x1b[0m"
+            "\x1b[36mBrowser Linux Sandbox\x1b[0m"
         );
 
         term.writeln(
-            "  help       Show help"
+            ""
         );
 
         term.writeln(
-            "  save       Save sandbox"
+            "  help       Show this help"
+        );
+
+        term.writeln(
+            "  save       Save sandbox now"
         );
 
         term.writeln(
@@ -632,24 +721,8 @@ async function specialCommand(command) {
             "  clear      Clear terminal"
         );
 
-        ensureNewLine();
-
-        writePrompt();
-
-        return true;
-    }
-
-
-    if (
-        trimmed === "save"
-    ) {
-
-        ensureNewLine();
-
-        await saveSandbox();
-
         term.writeln(
-            "\x1b[32mSandbox saved to this browser.\x1b[0m"
+            ""
         );
 
         writePrompt();
@@ -658,14 +731,48 @@ async function specialCommand(command) {
     }
 
 
+    /* SAVE */
+
+    if (
+        trimmed === "save"
+    ) {
+
+        newLine();
+
+        const saved =
+            await saveSandbox();
+
+
+        if (saved) {
+
+            term.writeln(
+                "\x1b[32mSandbox saved to this browser.\x1b[0m"
+            );
+
+        } else {
+
+            term.writeln(
+                "\x1b[31mSandbox could not be saved.\x1b[0m"
+            );
+        }
+
+
+        writePrompt();
+
+        return true;
+    }
+
+
+    /* RESET */
+
     if (
         trimmed === "reset"
     ) {
 
-        ensureNewLine();
+        newLine();
 
         term.writeln(
-            "\x1b[33mThis deletes the saved sandbox.\x1b[0m"
+            "\x1b[33mThis will delete the saved browser sandbox.\x1b[0m"
         );
 
         term.writeln(
@@ -678,23 +785,33 @@ async function specialCommand(command) {
     }
 
 
+    /* RESET YES */
+
     if (
         trimmed === "reset yes"
     ) {
 
-        ensureNewLine();
+        newLine();
 
         await deleteSandbox();
 
+
         term.writeln(
-            "\x1b[32mSandbox deleted. Reload the page to create a new sandbox.\x1b[0m"
+            "\x1b[32mSaved sandbox deleted.\x1b[0m"
         );
+
+        term.writeln(
+            "\x1b[90mReload the page to create a fresh sandbox.\x1b[0m"
+        );
+
 
         writePrompt();
 
         return true;
     }
 
+
+    /* CLEAR */
 
     if (
         trimmed === "clear"
@@ -717,7 +834,7 @@ async function specialCommand(command) {
 
 
 /* =========================================
-   EXECUTE COMMAND
+   EXECUTE
 ========================================= */
 
 async function executeCommand(command) {
@@ -727,11 +844,15 @@ async function executeCommand(command) {
     }
 
 
+    /*
+     * Empty command.
+     */
+
     if (
         command.trim() === ""
     ) {
 
-        ensureNewLine();
+        newLine();
 
         writePrompt();
 
@@ -739,7 +860,14 @@ async function executeCommand(command) {
     }
 
 
-    history.push(command);
+    /*
+     * History.
+     */
+
+    history.push(
+        command
+    );
+
 
     if (
         history.length > 100
@@ -748,11 +876,18 @@ async function executeCommand(command) {
         history.shift();
     }
 
+
     historyIndex = -1;
 
 
+    /*
+     * Built-in browser commands.
+     */
+
     if (
-        await specialCommand(command)
+        await specialCommand(
+            command
+        )
     ) {
 
         return;
@@ -768,14 +903,14 @@ async function executeCommand(command) {
 
 
         /*
-         * Move away from the command line.
+         * Finish the typed command line.
          */
 
-        ensureNewLine();
+        newLine();
 
 
         /*
-         * STDOUT
+         * STDOUT.
          */
 
         if (
@@ -789,33 +924,31 @@ async function executeCommand(command) {
 
 
         /*
-         * STDERR
+         * STDERR.
          */
 
         if (
             result.stderr
         ) {
 
-            /*
-             * Make sure stderr starts
-             * on its own line.
-             */
-
             if (
                 result.stdout &&
                 !result.stdout.endsWith("\n")
             ) {
 
-                ensureNewLine();
+                newLine();
             }
+
 
             term.write(
                 "\x1b[31m"
             );
 
+
             writeOutput(
                 result.stderr
             );
+
 
             term.write(
                 "\x1b[0m"
@@ -824,23 +957,37 @@ async function executeCommand(command) {
 
 
         /*
-         * ALWAYS move to a fresh line
-         * before the next prompt.
+         * Always put the next prompt
+         * on its own line.
          */
 
-        ensureNewLine();
+        newLine();
 
 
         updatePrompt();
 
+
+        /*
+         * Persist everything:
+         *
+         * - files
+         * - directories
+         * - environment
+         * - variables
+         * - aliases
+         * - current directory
+         */
+
         await saveSandbox();
+
 
         writePrompt();
 
 
     } catch (error) {
 
-        ensureNewLine();
+        newLine();
+
 
         term.write(
             "\x1b[31m" +
@@ -848,7 +995,8 @@ async function executeCommand(command) {
             "\x1b[0m"
         );
 
-        ensureNewLine();
+
+        newLine();
 
         writePrompt();
     }
@@ -878,13 +1026,19 @@ term.onData(
             const command =
                 inputBuffer;
 
-            inputBuffer = "";
 
-            historyIndex = -1;
+            inputBuffer =
+                "";
+
+
+            historyIndex =
+                -1;
+
 
             await executeCommand(
                 command
             );
+
 
             return;
         }
@@ -908,10 +1062,12 @@ term.onData(
                         -1
                     );
 
+
                 term.write(
                     "\b \b"
                 );
             }
+
 
             return;
         }
@@ -929,13 +1085,20 @@ term.onData(
                 "^C"
             );
 
-            ensureNewLine();
 
-            inputBuffer = "";
+            newLine();
 
-            historyIndex = -1;
+
+            inputBuffer =
+                "";
+
+
+            historyIndex =
+                -1;
+
 
             writePrompt();
+
 
             return;
         }
@@ -951,11 +1114,14 @@ term.onData(
 
             term.clear();
 
+
             term.write(
                 "\x1b[2J\x1b[H"
             );
 
+
             writePrompt();
+
 
             return;
         }
@@ -1002,7 +1168,7 @@ term.onData(
 
 
         /*
-         * Normal characters.
+         * Printable characters.
          */
 
         for (
@@ -1012,11 +1178,14 @@ term.onData(
             if (
                 character.charCodeAt(0) < 32
             ) {
+
                 continue;
             }
 
+
             inputBuffer +=
                 character;
+
 
             term.write(
                 character
@@ -1027,7 +1196,7 @@ term.onData(
 
 
 /* =========================================
-   HISTORY
+   HISTORY UP
 ========================================= */
 
 function historyUp() {
@@ -1035,6 +1204,7 @@ function historyUp() {
     if (
         history.length === 0
     ) {
+
         return;
     }
 
@@ -1062,11 +1232,16 @@ function historyUp() {
 }
 
 
+/* =========================================
+   HISTORY DOWN
+========================================= */
+
 function historyDown() {
 
     if (
         historyIndex === -1
     ) {
+
         return;
     }
 
@@ -1078,6 +1253,7 @@ function historyDown() {
 
         historyIndex++;
 
+
         replaceInput(
             history[
                 historyIndex
@@ -1086,12 +1262,20 @@ function historyDown() {
 
     } else {
 
-        historyIndex = -1;
+        historyIndex =
+            -1;
 
-        replaceInput("");
+
+        replaceInput(
+            ""
+        );
     }
 }
 
+
+/* =========================================
+   REPLACE INPUT
+========================================= */
 
 function replaceInput(text) {
 
@@ -1105,6 +1289,7 @@ function replaceInput(text) {
                 -1
             );
 
+
         term.write(
             "\b \b"
         );
@@ -1113,6 +1298,7 @@ function replaceInput(text) {
 
     inputBuffer =
         text;
+
 
     term.write(
         text
@@ -1130,3 +1316,4 @@ start();
 
 </body>
 </html>
+
