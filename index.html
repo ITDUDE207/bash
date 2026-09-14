@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bash Sandbox</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      font-family: monospace;
+    }
+
+    #terminal {
+      width: 100%;
+      height: 100%;
+      padding: 18px;
+      overflow-y: auto;
+      color: #eee;
+      background: #000;
+      cursor: text;
+    }
+
+    .line {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .prompt {
+      color: #00ff66;
+    }
+
+    .error {
+      color: #ff5555;
+    }
+
+    .info {
+      color: #aaa;
+    }
+
+    #inputLine {
+      display: flex;
+      align-items: flex-start;
+    }
+
+    #prompt {
+      color: #00ff66;
+      white-space: nowrap;
+    }
+
+    #commandInput {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #fff;
+      font: inherit;
+      padding: 0;
+      margin: 0;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="terminal">
+
+  <div class="line info">
+    Bash Sandbox
+  </div>
+
+  <div class="line info">
+    Powered by Bashkit WebAssembly
+  </div>
+
+  <div class="line info">
+    Type "help" to get started.
+  </div>
+
+  <br>
+
+  <div id="output"></div>
+
+  <div id="inputLine">
+
+    <span id="prompt">
+      user@sandbox:~$
+    </span>
+
+    &nbsp;
+
+    <input
+      id="commandInput"
+      autocomplete="off"
+      autocorrect="off"
+      autocapitalize="off"
+      spellcheck="false"
+      autofocus
+    >
+
+  </div>
+
+</div>
+
+
+<script type="module">
+
+import {
+  initBashkit,
+  Bash
+} from "https://esm.sh/@everruns/bashkit-wasm";
+
+
+/*
+ * ----------------------------------------
+ * TERMINAL ELEMENTS
+ * ----------------------------------------
+ */
+
+const terminal =
+  document.getElementById("terminal");
+
+const output =
+  document.getElementById("output");
+
+const input =
+  document.getElementById("commandInput");
+
+const prompt =
+  document.getElementById("prompt");
+
+
+/*
+ * ----------------------------------------
+ * INITIALIZE BASHKIT
+ * ----------------------------------------
+ */
+
+let bash = null;
+
+async function start() {
+
+  try {
+
+    await initBashkit();
+
+    bash = new Bash();
+
+    /*
+     * Create a useful starting environment.
+     */
+
+    bash.executeSync(`
+      export USER=user
+      export HOME=/home/user
+      export SHELL=/bin/bash
+      mkdir -p /home/user
+      cd /home/user
+    `);
+
+    print(
+      "Bashkit WASM initialized.",
+      "info"
+    );
+
+    input.focus();
+
+  } catch (error) {
+
+    print(
+      "Failed to initialize Bashkit:",
+      "error"
+    );
+
+    print(
+      error.message,
+      "error"
+    );
+  }
+}
+
+
+/*
+ * ----------------------------------------
+ * EXECUTE COMMAND
+ * ----------------------------------------
+ */
+
+function executeCommand(command) {
+
+  if (!bash) {
+
+    print(
+      "Bashkit is still loading...",
+      "error"
+    );
+
+    return;
+  }
+
+  /*
+   * Show command.
+   */
+
+  print(
+    prompt.textContent +
+    " " +
+    command
+  );
+
+
+  if (!command.trim()) {
+    return;
+  }
+
+
+  try {
+
+    const result =
+      bash.executeSync(command);
+
+
+    /*
+     * STDOUT
+     */
+
+    if (result.stdout) {
+
+      print(
+        result.stdout
+      );
+    }
+
+
+    /*
+     * STDERR
+     */
+
+    if (result.stderr) {
+
+      print(
+        result.stderr,
+        "error"
+      );
+    }
+
+
+    /*
+     * Exit status
+     */
+
+    if (
+      typeof result.exitCode === "number" &&
+      result.exitCode !== 0
+    ) {
+
+      print(
+        "[exit code " +
+        result.exitCode +
+        "]",
+        "error"
+      );
+    }
+
+
+    /*
+     * Update prompt if directory changed.
+     */
+
+    updatePrompt();
+
+
+  } catch (error) {
+
+    print(
+      "Execution error: " +
+      error.message,
+      "error"
+    );
+  }
+}
+
+
+/*
+ * ----------------------------------------
+ * UPDATE PROMPT
+ * ----------------------------------------
+ */
+
+function updatePrompt() {
+
+  try {
+
+    const result =
+      bash.executeSync("pwd");
+
+    const cwd =
+      result.stdout.trim();
+
+    prompt.textContent =
+      "user@sandbox:" +
+      (
+        cwd === "/home/user"
+          ? "~"
+          : cwd
+      ) +
+      "$";
+
+  } catch {
+
+    prompt.textContent =
+      "user@sandbox:~$";
+  }
+}
+
+
+/*
+ * ----------------------------------------
+ * PRINT
+ * ----------------------------------------
+ */
+
+function print(
+  text,
+  type = ""
+) {
+
+  const line =
+    document.createElement("div");
+
+  line.className =
+    "line " + type;
+
+  line.textContent =
+    text;
+
+  output.appendChild(line);
+
+  terminal.scrollTop =
+    terminal.scrollHeight;
+}
+
+
+/*
+ * ----------------------------------------
+ * ENTER
+ * ----------------------------------------
+ */
+
+input.addEventListener(
+  "keydown",
+  function(event) {
+
+    if (event.key === "Enter") {
+
+      const command =
+        input.value;
+
+      input.value = "";
+
+      executeCommand(command);
+
+    }
+
+  }
+);
+
+
+/*
+ * ----------------------------------------
+ * KEEP FOCUS
+ * ----------------------------------------
+ */
+
+terminal.addEventListener(
+  "click",
+  function() {
+    input.focus();
+  }
+);
+
+
+/*
+ * ----------------------------------------
+ * START
+ * ----------------------------------------
+ */
+
+start();
+
+</script>
+
+</body>
+</html>
