@@ -1,121 +1,42 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bashkit Browser Sandbox</title>
+<title>Browser Linux Sandbox</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.4.0/css/xterm.css">
 
 <style>
-* {
-    box-sizing: border-box;
-}
-
-html,
-body {
-    margin: 0;
-    width: 100%;
-    height: 100%;
-    background: #000;
-    color: #fff;
-    font-family: Consolas, "Courier New", monospace;
-}
-
-body {
-    overflow: hidden;
+html,body {
+    margin:0;
+    width:100%;
+    height:100%;
+    overflow:hidden;
+    background:#000;
 }
 
 #terminal {
-    width: 100%;
-    height: 100%;
-    padding: 16px;
-    overflow-y: auto;
-    background: #000;
-    cursor: text;
-    font-size: 15px;
-    line-height: 1.5;
-}
-
-.line {
-    margin: 0;
-    padding: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
-.info {
-    color: #aaa;
-}
-
-.success {
-    color: #00ff66;
-}
-
-.error {
-    color: #ff5555;
-}
-
-.command {
-    color: #fff;
-}
-
-#inputLine {
-    display: flex;
-    align-items: baseline;
-    margin: 0;
-    padding: 0;
-}
-
-#prompt {
-    color: #00ff66;
-    white-space: nowrap;
-}
-
-#commandInput {
-    flex: 1;
-    min-width: 0;
-    background: transparent;
-    border: none;
-    outline: none;
-    color: #fff;
-    font: inherit;
-    padding: 0;
-    margin: 0;
-}
-
-#commandInput::selection {
-    background: #444;
+    width:100%;
+    height:100%;
 }
 </style>
 </head>
 
 <body>
 
-<div id="terminal">
-
-<div class="line info">Bash Sandbox</div>
-<div class="line info">Powered by Bashkit WebAssembly</div>
-<div class="line info">Loading...</div>
-
-<br>
-
-<div id="output"></div>
-
-<div id="inputLine">
-<span id="prompt">user@sandbox:~$</span>
-<span>&nbsp;</span>
-<input
-    id="commandInput"
-    autocomplete="off"
-    autocorrect="off"
-    autocapitalize="off"
-    spellcheck="false"
-    disabled
->
-</div>
-
-</div>
+<div id="terminal"></div>
 
 <script type="module">
+
+import {
+    Terminal
+} from "https://esm.sh/@xterm/xterm@5.4.0";
+
+import {
+    FitAddon
+} from "https://esm.sh/@xterm/addon-fit@0.9.0";
 
 import {
     initBashkit,
@@ -123,184 +44,310 @@ import {
 } from "https://esm.sh/@everruns/bashkit-wasm";
 
 
-const terminal =
+const terminalElement =
     document.getElementById("terminal");
 
-const output =
-    document.getElementById("output");
+const term =
+    new Terminal({
+        cursorBlink:true,
+        cursorStyle:"block",
+        fontFamily:'Consolas, "Courier New", monospace',
+        fontSize:15,
+        lineHeight:1.2,
+        scrollback:10000,
+        convertEol:true,
 
-const input =
-    document.getElementById("commandInput");
+        theme:{
+            background:"#000000",
+            foreground:"#f0f0f0",
+            cursor:"#ffffff",
 
-const prompt =
-    document.getElementById("prompt");
+            black:"#000000",
+            red:"#ff5555",
+            green:"#50fa7b",
+            yellow:"#f1fa8c",
+            blue:"#6272a4",
+            magenta:"#ff79c6",
+            cyan:"#8be9fd",
+            white:"#bbbbbb",
+
+            brightBlack:"#555555",
+            brightRed:"#ff6e6e",
+            brightGreen:"#69ff94",
+            brightYellow:"#ffffa5",
+            brightBlue:"#7d8cff",
+            brightMagenta:"#ff92df",
+            brightCyan:"#a4ffff",
+            brightWhite:"#ffffff"
+        }
+    });
+
+
+const fitAddon =
+    new FitAddon();
+
+term.loadAddon(fitAddon);
+
+term.open(terminalElement);
+
+fitAddon.fit();
+
+window.addEventListener(
+    "resize",
+    () => fitAddon.fit()
+);
 
 
 let bash = null;
+let ready = false;
+
+let inputBuffer = "";
 
 let history = [];
-
 let historyIndex = -1;
 
+let currentDirectory = "~";
 
-/*
- * PRINT
- */
 
-function print(text, className = "") {
+/* =========================================
+   INDEXEDDB
+========================================= */
 
-    const line =
-        document.createElement("div");
+const DB_NAME =
+    "BrowserLinuxSandbox";
 
-    line.className =
-        "line " + className;
+const DB_VERSION = 1;
 
-    line.textContent =
-        text;
+const STORE_NAME =
+    "sandbox";
 
-    output.appendChild(line);
+const SNAPSHOT_KEY =
+    "bashkit-snapshot";
 
-    terminal.scrollTop =
-        terminal.scrollHeight;
+
+function openDatabase() {
+
+    return new Promise(
+        (resolve,reject) => {
+
+            const request =
+                indexedDB.open(
+                    DB_NAME,
+                    DB_VERSION
+                );
+
+            request.onupgradeneeded =
+                event => {
+
+                    const db =
+                        event.target.result;
+
+                    if (
+                        !db.objectStoreNames.contains(
+                            STORE_NAME
+                        )
+                    ) {
+
+                        db.createObjectStore(
+                            STORE_NAME
+                        );
+                    }
+                };
+
+            request.onsuccess =
+                () => resolve(
+                    request.result
+                );
+
+            request.onerror =
+                () => reject(
+                    request.error
+                );
+        }
+    );
 }
 
 
-/*
- * INITIALIZE
- */
+/* =========================================
+   SAVE
+========================================= */
 
-async function start() {
+async function saveSandbox() {
+
+    if (!bash) {
+        return;
+    }
 
     try {
 
-        print(
-            "Loading Bashkit WebAssembly..."
+        const snapshot =
+            bash.snapshot();
+
+        const db =
+            await openDatabase();
+
+        await new Promise(
+            (resolve,reject) => {
+
+                const transaction =
+                    db.transaction(
+                        STORE_NAME,
+                        "readwrite"
+                    );
+
+                const store =
+                    transaction.objectStore(
+                        STORE_NAME
+                    );
+
+                store.put(
+                    snapshot,
+                    SNAPSHOT_KEY
+                );
+
+                transaction.oncomplete =
+                    resolve;
+
+                transaction.onerror =
+                    () => reject(
+                        transaction.error
+                    );
+            }
         );
 
+        db.close();
 
-        /*
-         * Load the WASM module.
-         */
+    } catch(error) {
 
-        await initBashkit();
-
-
-        print(
-            "WASM module loaded.",
-            "success"
+        console.error(
+            "Save failed:",
+            error
         );
-
-
-        /*
-         * Create Bash instance.
-         */
-
-        bash = new Bash();
-
-
-        print(
-            "Bash interpreter created.",
-            "success"
-        );
-
-
-        /*
-         * Configure the shell.
-         */
-
-        bash.executeSync(
-            'export USER="user"'
-        );
-
-        bash.executeSync(
-            'export HOME="/home/user"'
-        );
-
-        bash.executeSync(
-            'export SHELL="/bin/bash"'
-        );
-
-        bash.executeSync(
-            'mkdir -p /home/user'
-        );
-
-        bash.executeSync(
-            'cd /home/user'
-        );
-
-
-        /*
-         * Ready.
-         */
-
-        print(
-            "Bashkit WASM initialized.",
-            "success"
-        );
-
-        print(
-            "Sandbox ready.",
-            "success"
-        );
-
-        input.disabled = false;
-
-        input.focus();
-
-        updatePrompt();
-
-
-    } catch (error) {
-
-        print(
-            "FAILED TO INITIALIZE BASHKIT",
-            "error"
-        );
-
-        print(
-            "Error type: " +
-            error.name,
-            "error"
-        );
-
-        print(
-            "Error message: " +
-            error.message,
-            "error"
-        );
-
-
-        /*
-         * Some WASM errors don't have
-         * a useful message, so display
-         * the complete object too.
-         */
-
-        try {
-
-            print(
-                "Full error: " +
-                JSON.stringify(
-                    error,
-                    Object.getOwnPropertyNames(error)
-                ),
-                "error"
-            );
-
-        } catch {
-
-            print(
-                "Could not serialize error.",
-                "error"
-            );
-        }
     }
 }
 
 
-/*
- * UPDATE PROMPT
- */
+/* =========================================
+   LOAD
+========================================= */
+
+async function loadSandbox() {
+
+    try {
+
+        const db =
+            await openDatabase();
+
+        const snapshot =
+            await new Promise(
+                (resolve,reject) => {
+
+                    const transaction =
+                        db.transaction(
+                            STORE_NAME,
+                            "readonly"
+                        );
+
+                    const store =
+                        transaction.objectStore(
+                            STORE_NAME
+                        );
+
+                    const request =
+                        store.get(
+                            SNAPSHOT_KEY
+                        );
+
+                    request.onsuccess =
+                        () => resolve(
+                            request.result
+                        );
+
+                    request.onerror =
+                        () => reject(
+                            request.error
+                        );
+                }
+            );
+
+        db.close();
+
+        if (!snapshot) {
+            return false;
+        }
+
+        bash.restoreSnapshot(
+            snapshot
+        );
+
+        return true;
+
+    } catch(error) {
+
+        console.error(
+            "Restore failed:",
+            error
+        );
+
+        return false;
+    }
+}
+
+
+/* =========================================
+   DELETE
+========================================= */
+
+async function deleteSandbox() {
+
+    try {
+
+        const db =
+            await openDatabase();
+
+        await new Promise(
+            (resolve,reject) => {
+
+                const transaction =
+                    db.transaction(
+                        STORE_NAME,
+                        "readwrite"
+                    );
+
+                const store =
+                    transaction.objectStore(
+                        STORE_NAME
+                    );
+
+                store.delete(
+                    SNAPSHOT_KEY
+                );
+
+                transaction.oncomplete =
+                    resolve;
+
+                transaction.onerror =
+                    () => reject(
+                        transaction.error
+                    );
+            }
+        );
+
+        db.close();
+
+    } catch(error) {
+
+        console.error(
+            "Delete failed:",
+            error
+        );
+    }
+}
+
+
+/* =========================================
+   PROMPT
+========================================= */
 
 function updatePrompt() {
 
@@ -316,19 +363,17 @@ function updatePrompt() {
         const cwd =
             result.stdout.trim();
 
-        let displayPath;
-
         if (
             cwd === "/home/user"
         ) {
 
-            displayPath = "~";
+            currentDirectory = "~";
 
         } else if (
             cwd.startsWith("/home/user/")
         ) {
 
-            displayPath =
+            currentDirectory =
                 "~" +
                 cwd.substring(
                     "/home/user".length
@@ -336,98 +381,259 @@ function updatePrompt() {
 
         } else {
 
-            displayPath = cwd;
+            currentDirectory = cwd;
         }
-
-        prompt.textContent =
-            "user@sandbox:" +
-            displayPath +
-            "$";
 
     } catch {
 
-        prompt.textContent =
-            "user@sandbox:~$";
+        currentDirectory = "~";
     }
 }
 
 
-/*
- * PRINT COMMAND
- */
+function writePrompt() {
 
-function printCommand(command) {
-
-    const line =
-        document.createElement("div");
-
-    line.className =
-        "line";
-
-    const promptElement =
-        document.createElement("span");
-
-    promptElement.className =
-        "success";
-
-    promptElement.textContent =
-        prompt.textContent + " ";
-
-
-    const commandElement =
-        document.createElement("span");
-
-    commandElement.className =
-        "command";
-
-    commandElement.textContent =
-        command;
-
-
-    line.appendChild(promptElement);
-    line.appendChild(commandElement);
-
-    output.appendChild(line);
+    term.write(
+        "\x1b[32muser@sandbox\x1b[0m:" +
+        "\x1b[36m" +
+        currentDirectory +
+        "\x1b[0m$ "
+    );
 }
 
 
-/*
- * EXECUTE COMMAND
- */
+/* =========================================
+   OUTPUT
+========================================= */
 
-function runCommand(command) {
+function writeOutput(text) {
 
-    if (!bash) {
-
-        print(
-            "Bashkit is not initialized.",
-            "error"
-        );
-
+    if (!text) {
         return;
     }
 
+    term.write(
+        text.replace(
+            /\n/g,
+            "\r\n"
+        )
+    );
+}
 
-    printCommand(command);
+
+/* =========================================
+   INITIALIZE
+========================================= */
+
+async function start() {
+
+    term.write(
+        "\x1b[90mStarting Browser Linux Sandbox...\x1b[0m\r\n"
+    );
+
+    try {
+
+        await initBashkit();
+
+        bash = new Bash();
+
+        const restored =
+            await loadSandbox();
+
+        if (restored) {
+
+            term.write(
+                "\x1b[32mSandbox restored from browser storage.\x1b[0m\r\n"
+            );
+
+        } else {
+
+            bash.executeSync(
+                'export USER="user"'
+            );
+
+            bash.executeSync(
+                'export HOME="/home/user"'
+            );
+
+            bash.executeSync(
+                'export SHELL="/bin/bash"'
+            );
+
+            bash.executeSync(
+                'mkdir -p /home/user'
+            );
+
+            bash.executeSync(
+                'cd /home/user'
+            );
+
+            await saveSandbox();
+
+            term.write(
+                "\x1b[32mNew sandbox created.\x1b[0m\r\n"
+            );
+        }
+
+        updatePrompt();
+
+        ready = true;
+
+        term.write(
+            "\x1b[90mFiles are automatically saved in this browser.\x1b[0m\r\n"
+        );
+
+        term.write(
+            "\x1b[90mType \"help\" for commands.\x1b[0m\r\n\r\n"
+        );
+
+        writePrompt();
+
+        term.focus();
+
+    } catch(error) {
+
+        term.write(
+            "\r\n\x1b[31mBashkit initialization failed.\x1b[0m\r\n"
+        );
+
+        term.write(
+            "\x1b[31m" +
+            error.name +
+            ": " +
+            error.message +
+            "\x1b[0m\r\n"
+        );
+
+        console.error(error);
+    }
+}
+
+
+/* =========================================
+   SPECIAL COMMANDS
+========================================= */
+
+async function specialCommand(command) {
+
+    const trimmed =
+        command.trim();
+
+
+    if (trimmed === "help") {
+
+        term.write("\r\n");
+
+        term.writeln(
+            "\x1b[36mBrowser Sandbox Commands\x1b[0m"
+        );
+
+        term.writeln(
+            "  help       Show help"
+        );
+
+        term.writeln(
+            "  save       Save sandbox"
+        );
+
+        term.writeln(
+            "  reset      Delete saved sandbox"
+        );
+
+        term.writeln(
+            "  clear      Clear terminal"
+        );
+
+        term.writeln("");
+
+        writePrompt();
+
+        return true;
+    }
+
+
+    if (trimmed === "save") {
+
+        await saveSandbox();
+
+        term.writeln(
+            "\x1b[32mSandbox saved to this browser.\x1b[0m"
+        );
+
+        writePrompt();
+
+        return true;
+    }
+
+
+    if (trimmed === "reset") {
+
+        term.writeln("");
+
+        term.writeln(
+            "\x1b[33mThis deletes the saved sandbox.\x1b[0m"
+        );
+
+        term.writeln(
+            "\x1b[33mType \"reset yes\" to confirm.\x1b[0m"
+        );
+
+        writePrompt();
+
+        return true;
+    }
+
+
+    if (trimmed === "reset yes") {
+
+        await deleteSandbox();
+
+        term.writeln(
+            "\x1b[32mSandbox deleted. Reload the page to create a new sandbox.\x1b[0m"
+        );
+
+        writePrompt();
+
+        return true;
+    }
+
+
+    if (trimmed === "clear") {
+
+        term.clear();
+
+        term.write(
+            "\x1b[2J\x1b[H"
+        );
+
+        writePrompt();
+
+        return true;
+    }
+
+
+    return false;
+}
+
+
+/* =========================================
+   EXECUTE
+========================================= */
+
+async function executeCommand(command) {
+
+    if (!bash) {
+        return;
+    }
 
 
     if (
         command.trim() === ""
     ) {
 
-        return;
-    }
+        term.write("\r\n");
 
-
-    /*
-     * Browser-side clear.
-     */
-
-    if (
-        command.trim() === "clear"
-    ) {
-
-        output.innerHTML = "";
+        writePrompt();
 
         return;
     }
@@ -435,20 +641,39 @@ function runCommand(command) {
 
     history.push(command);
 
+    if (
+        history.length > 100
+    ) {
+
+        history.shift();
+    }
+
     historyIndex = -1;
+
+
+    if (
+        await specialCommand(command)
+    ) {
+
+        return;
+    }
 
 
     try {
 
         const result =
-            bash.executeSync(command);
+            bash.executeSync(
+                command
+            );
+
+        term.write("\r\n");
 
 
         if (
             result.stdout
         ) {
 
-            print(
+            writeOutput(
                 result.stdout
             );
         }
@@ -458,182 +683,273 @@ function runCommand(command) {
             result.stderr
         ) {
 
-            print(
-                result.stderr,
-                "error"
+            term.write(
+                "\x1b[31m"
             );
-        }
 
+            writeOutput(
+                result.stderr
+            );
 
-        if (
-            typeof result.exitCode === "number" &&
-            result.exitCode !== 0
-        ) {
-
-            print(
-                "[exit code " +
-                result.exitCode +
-                "]",
-                "error"
+            term.write(
+                "\x1b[0m"
             );
         }
 
 
         updatePrompt();
 
+        await saveSandbox();
 
-    } catch (error) {
+        writePrompt();
 
-        print(
-            "Command error: " +
-            error.message,
-            "error"
+    } catch(error) {
+
+        term.write(
+            "\r\n\x1b[31m" +
+            error.message +
+            "\x1b[0m\r\n"
+        );
+
+        writePrompt();
+    }
+}
+
+
+/* =========================================
+   INPUT
+========================================= */
+
+term.onData(
+    async data => {
+
+        if (!ready) {
+            return;
+        }
+
+
+        if (
+            data === "\r"
+        ) {
+
+            const command =
+                inputBuffer;
+
+            inputBuffer = "";
+
+            historyIndex = -1;
+
+            await executeCommand(
+                command
+            );
+
+            return;
+        }
+
+
+        if (
+            data === "\x7f"
+        ) {
+
+            if (
+                inputBuffer.length > 0
+            ) {
+
+                inputBuffer =
+                    inputBuffer.slice(
+                        0,
+                        -1
+                    );
+
+                term.write(
+                    "\b \b"
+                );
+            }
+
+            return;
+        }
+
+
+        if (
+            data === "\x03"
+        ) {
+
+            term.write(
+                "^C\r\n"
+            );
+
+            inputBuffer = "";
+
+            historyIndex = -1;
+
+            writePrompt();
+
+            return;
+        }
+
+
+        if (
+            data === "\x0c"
+        ) {
+
+            term.clear();
+
+            term.write(
+                "\x1b[2J\x1b[H"
+            );
+
+            writePrompt();
+
+            return;
+        }
+
+
+        if (
+            data === "\x1b[A"
+        ) {
+
+            historyUp();
+
+            return;
+        }
+
+
+        if (
+            data === "\x1b[B"
+        ) {
+
+            historyDown();
+
+            return;
+        }
+
+
+        if (
+            data.startsWith("\x1b")
+        ) {
+
+            return;
+        }
+
+
+        for (
+            const character of data
+        ) {
+
+            if (
+                character.charCodeAt(0) < 32
+            ) {
+                continue;
+            }
+
+            inputBuffer +=
+                character;
+
+            term.write(
+                character
+            );
+        }
+    }
+);
+
+
+/* =========================================
+   HISTORY
+========================================= */
+
+function historyUp() {
+
+    if (
+        history.length === 0
+    ) {
+        return;
+    }
+
+
+    if (
+        historyIndex === -1
+    ) {
+
+        historyIndex =
+            history.length - 1;
+
+    } else if (
+        historyIndex > 0
+    ) {
+
+        historyIndex--;
+    }
+
+
+    replaceInput(
+        history[
+            historyIndex
+        ]
+    );
+}
+
+
+function historyDown() {
+
+    if (
+        historyIndex === -1
+    ) {
+        return;
+    }
+
+
+    if (
+        historyIndex <
+        history.length - 1
+    ) {
+
+        historyIndex++;
+
+        replaceInput(
+            history[
+                historyIndex
+            ]
+        );
+
+    } else {
+
+        historyIndex = -1;
+
+        replaceInput("");
+    }
+}
+
+
+function replaceInput(text) {
+
+    while (
+        inputBuffer.length > 0
+    ) {
+
+        inputBuffer =
+            inputBuffer.slice(
+                0,
+                -1
+            );
+
+        term.write(
+            "\b \b"
         );
     }
 
 
-    terminal.scrollTop =
-        terminal.scrollHeight;
+    inputBuffer =
+        text;
+
+    term.write(
+        text
+    );
 }
 
 
-/*
- * KEYBOARD
- */
-
-input.addEventListener(
-    "keydown",
-    function(event) {
-
-
-        /*
-         * ENTER
-         */
-
-        if (
-            event.key === "Enter"
-        ) {
-
-            const command =
-                input.value;
-
-            input.value = "";
-
-            runCommand(command);
-
-            return;
-        }
-
-
-        /*
-         * UP
-         */
-
-        if (
-            event.key === "ArrowUp"
-        ) {
-
-            if (
-                history.length === 0
-            ) {
-                return;
-            }
-
-
-            if (
-                historyIndex <
-                history.length - 1
-            ) {
-
-                historyIndex++;
-            }
-
-
-            input.value =
-                history[
-                    history.length -
-                    1 -
-                    historyIndex
-                ];
-
-            event.preventDefault();
-
-            return;
-        }
-
-
-        /*
-         * DOWN
-         */
-
-        if (
-            event.key === "ArrowDown"
-        ) {
-
-            if (
-                historyIndex > 0
-            ) {
-
-                historyIndex--;
-
-                input.value =
-                    history[
-                        history.length -
-                        1 -
-                        historyIndex
-                    ];
-
-            } else {
-
-                historyIndex = -1;
-
-                input.value = "";
-            }
-
-
-            event.preventDefault();
-
-            return;
-        }
-
-
-        /*
-         * CTRL + L
-         */
-
-        if (
-            event.ctrlKey &&
-            event.key.toLowerCase() === "l"
-        ) {
-
-            output.innerHTML = "";
-
-            event.preventDefault();
-        }
-
-    }
-);
-
-
-/*
- * FOCUS TERMINAL
- */
-
-terminal.addEventListener(
-    "click",
-    function() {
-
-        if (!input.disabled) {
-            input.focus();
-        }
-
-    }
-);
-
-
-/*
- * START
- */
+/* =========================================
+   START
+========================================= */
 
 start();
 
