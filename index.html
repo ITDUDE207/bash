@@ -3,8 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-<title>Bash Sandbox</title>
+<title>Bashkit Browser Sandbox</title>
 
 <style>
 * {
@@ -17,18 +16,18 @@ body {
     width: 100%;
     height: 100%;
     background: #000;
-    overflow: hidden;
+    color: #fff;
     font-family: Consolas, "Courier New", monospace;
 }
 
 body {
-    color: #eee;
+    overflow: hidden;
 }
 
 #terminal {
     width: 100%;
     height: 100%;
-    padding: 18px;
+    padding: 16px;
     overflow-y: auto;
     background: #000;
     cursor: text;
@@ -37,22 +36,26 @@ body {
 }
 
 .line {
-    white-space: pre-wrap;
-    word-break: break-word;
     margin: 0;
     padding: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 .info {
     color: #aaa;
 }
 
+.success {
+    color: #00ff66;
+}
+
 .error {
     color: #ff5555;
 }
 
-.success {
-    color: #00ff66;
+.command {
+    color: #fff;
 }
 
 #inputLine {
@@ -69,6 +72,7 @@ body {
 
 #commandInput {
     flex: 1;
+    min-width: 0;
     background: transparent;
     border: none;
     outline: none;
@@ -76,7 +80,6 @@ body {
     font: inherit;
     padding: 0;
     margin: 0;
-    min-width: 0;
 }
 
 #commandInput::selection {
@@ -87,7 +90,30 @@ body {
 
 <body>
 
-<div id="terminal"><div class="line info">Bash Sandbox</div><div class="line info">Powered by Bashkit WebAssembly</div><div class="line info">Type "help" to get started.</div><br><div id="output"></div><div id="inputLine"><span id="prompt">user@sandbox:~$</span><span>&nbsp;</span><input id="commandInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" autofocus></div></div>
+<div id="terminal">
+
+<div class="line info">Bash Sandbox</div>
+<div class="line info">Powered by Bashkit WebAssembly</div>
+<div class="line info">Loading...</div>
+
+<br>
+
+<div id="output"></div>
+
+<div id="inputLine">
+<span id="prompt">user@sandbox:~$</span>
+<span>&nbsp;</span>
+<input
+    id="commandInput"
+    autocomplete="off"
+    autocorrect="off"
+    autocapitalize="off"
+    spellcheck="false"
+    disabled
+>
+</div>
+
+</div>
 
 <script type="module">
 
@@ -96,10 +122,6 @@ import {
     Bash
 } from "https://esm.sh/@everruns/bashkit-wasm";
 
-
-/*
- * TERMINAL ELEMENTS
- */
 
 const terminal =
     document.getElementById("terminal");
@@ -114,46 +136,102 @@ const prompt =
     document.getElementById("prompt");
 
 
-/*
- * BASHKIT INSTANCE
- */
-
 let bash = null;
 
-
-/*
- * COMMAND HISTORY
- */
-
-let commandHistory = [];
+let history = [];
 
 let historyIndex = -1;
 
 
 /*
- * INITIALIZE BASHKIT
+ * PRINT
+ */
+
+function print(text, className = "") {
+
+    const line =
+        document.createElement("div");
+
+    line.className =
+        "line " + className;
+
+    line.textContent =
+        text;
+
+    output.appendChild(line);
+
+    terminal.scrollTop =
+        terminal.scrollHeight;
+}
+
+
+/*
+ * INITIALIZE
  */
 
 async function start() {
 
     try {
 
+        print(
+            "Loading Bashkit WebAssembly..."
+        );
+
+
+        /*
+         * Load the WASM module.
+         */
+
         await initBashkit();
+
+
+        print(
+            "WASM module loaded.",
+            "success"
+        );
+
+
+        /*
+         * Create Bash instance.
+         */
 
         bash = new Bash();
 
+
+        print(
+            "Bash interpreter created.",
+            "success"
+        );
+
+
         /*
-         * Create the user's home directory.
+         * Configure the shell.
          */
 
-        bash.executeSync(`
-            export USER=user
-            export HOME=/home/user
-            export SHELL=/bin/bash
-            export PATH=/usr/local/bin:/usr/bin:/bin
-            mkdir -p /home/user
-            cd /home/user
-        `);
+        bash.executeSync(
+            'export USER="user"'
+        );
+
+        bash.executeSync(
+            'export HOME="/home/user"'
+        );
+
+        bash.executeSync(
+            'export SHELL="/bin/bash"'
+        );
+
+        bash.executeSync(
+            'mkdir -p /home/user'
+        );
+
+        bash.executeSync(
+            'cd /home/user'
+        );
+
+
+        /*
+         * Ready.
+         */
 
         print(
             "Bashkit WASM initialized.",
@@ -162,211 +240,61 @@ async function start() {
 
         print(
             "Sandbox ready.",
-            "info"
+            "success"
         );
+
+        input.disabled = false;
 
         input.focus();
 
-    } catch (error) {
-
-        print(
-            "Failed to initialize Bashkit.",
-            "error"
-        );
-
-        print(
-            error.message,
-            "error"
-        );
-    }
-}
-
-
-/*
- * EXECUTE COMMAND
- */
-
-function executeCommand(command) {
-
-    if (!bash) {
-
-        print(
-            "Bashkit is still loading...",
-            "error"
-        );
-
-        return;
-    }
-
-
-    /*
-     * Display command.
-     */
-
-    printCommand(command);
-
-
-    /*
-     * Empty command.
-     */
-
-    if (!command.trim()) {
-
-        return;
-    }
-
-
-    /*
-     * Add to history.
-     */
-
-    commandHistory.push(command);
-
-    historyIndex = -1;
-
-
-    /*
-     * Special browser-side clear command.
-     */
-
-    if (command.trim() === "clear") {
-
-        output.innerHTML = "";
-
-        return;
-    }
-
-
-    try {
-
-        /*
-         * Execute inside Bashkit.
-         */
-
-        const result =
-            bash.executeSync(command);
-
-
-        /*
-         * STDOUT
-         */
-
-        if (result.stdout) {
-
-            print(
-                result.stdout
-            );
-        }
-
-
-        /*
-         * STDERR
-         */
-
-        if (result.stderr) {
-
-            print(
-                result.stderr,
-                "error"
-            );
-        }
-
-
-        /*
-         * Exit code
-         */
-
-        if (
-            typeof result.exitCode === "number" &&
-            result.exitCode !== 0
-        ) {
-
-            print(
-                "[exit code " +
-                result.exitCode +
-                "]",
-                "error"
-            );
-        }
-
-
-        /*
-         * Update prompt.
-         */
-
         updatePrompt();
 
+
     } catch (error) {
 
         print(
-            "Execution error: " +
+            "FAILED TO INITIALIZE BASHKIT",
+            "error"
+        );
+
+        print(
+            "Error type: " +
+            error.name,
+            "error"
+        );
+
+        print(
+            "Error message: " +
             error.message,
             "error"
         );
+
+
+        /*
+         * Some WASM errors don't have
+         * a useful message, so display
+         * the complete object too.
+         */
+
+        try {
+
+            print(
+                "Full error: " +
+                JSON.stringify(
+                    error,
+                    Object.getOwnPropertyNames(error)
+                ),
+                "error"
+            );
+
+        } catch {
+
+            print(
+                "Could not serialize error.",
+                "error"
+            );
+        }
     }
-
-
-    scrollTerminal();
-}
-
-
-/*
- * DISPLAY COMMAND
- */
-
-function printCommand(command) {
-
-    const line =
-        document.createElement("div");
-
-    line.className =
-        "line";
-
-    const promptText =
-        document.createElement("span");
-
-    promptText.className =
-        "prompt";
-
-    promptText.textContent =
-        prompt.textContent + " ";
-
-
-    const commandText =
-        document.createElement("span");
-
-    commandText.textContent =
-        command;
-
-
-    line.appendChild(promptText);
-    line.appendChild(commandText);
-
-    output.appendChild(line);
-}
-
-
-/*
- * DISPLAY OUTPUT
- */
-
-function print(
-    text,
-    type = ""
-) {
-
-    const line =
-        document.createElement("div");
-
-    line.className =
-        "line " + type;
-
-    line.textContent =
-        text;
-
-    output.appendChild(line);
-
-    scrollTerminal();
 }
 
 
@@ -376,6 +304,10 @@ function print(
 
 function updatePrompt() {
 
+    if (!bash) {
+        return;
+    }
+
     try {
 
         const result =
@@ -384,11 +316,11 @@ function updatePrompt() {
         const cwd =
             result.stdout.trim();
 
-
         let displayPath;
 
-
-        if (cwd === "/home/user") {
+        if (
+            cwd === "/home/user"
+        ) {
 
             displayPath = "~";
 
@@ -407,7 +339,6 @@ function updatePrompt() {
             displayPath = cwd;
         }
 
-
         prompt.textContent =
             "user@sandbox:" +
             displayPath +
@@ -422,7 +353,152 @@ function updatePrompt() {
 
 
 /*
- * KEYBOARD INPUT
+ * PRINT COMMAND
+ */
+
+function printCommand(command) {
+
+    const line =
+        document.createElement("div");
+
+    line.className =
+        "line";
+
+    const promptElement =
+        document.createElement("span");
+
+    promptElement.className =
+        "success";
+
+    promptElement.textContent =
+        prompt.textContent + " ";
+
+
+    const commandElement =
+        document.createElement("span");
+
+    commandElement.className =
+        "command";
+
+    commandElement.textContent =
+        command;
+
+
+    line.appendChild(promptElement);
+    line.appendChild(commandElement);
+
+    output.appendChild(line);
+}
+
+
+/*
+ * EXECUTE COMMAND
+ */
+
+function runCommand(command) {
+
+    if (!bash) {
+
+        print(
+            "Bashkit is not initialized.",
+            "error"
+        );
+
+        return;
+    }
+
+
+    printCommand(command);
+
+
+    if (
+        command.trim() === ""
+    ) {
+
+        return;
+    }
+
+
+    /*
+     * Browser-side clear.
+     */
+
+    if (
+        command.trim() === "clear"
+    ) {
+
+        output.innerHTML = "";
+
+        return;
+    }
+
+
+    history.push(command);
+
+    historyIndex = -1;
+
+
+    try {
+
+        const result =
+            bash.executeSync(command);
+
+
+        if (
+            result.stdout
+        ) {
+
+            print(
+                result.stdout
+            );
+        }
+
+
+        if (
+            result.stderr
+        ) {
+
+            print(
+                result.stderr,
+                "error"
+            );
+        }
+
+
+        if (
+            typeof result.exitCode === "number" &&
+            result.exitCode !== 0
+        ) {
+
+            print(
+                "[exit code " +
+                result.exitCode +
+                "]",
+                "error"
+            );
+        }
+
+
+        updatePrompt();
+
+
+    } catch (error) {
+
+        print(
+            "Command error: " +
+            error.message,
+            "error"
+        );
+    }
+
+
+    terminal.scrollTop =
+        terminal.scrollHeight;
+}
+
+
+/*
+ * KEYBOARD
  */
 
 input.addEventListener(
@@ -434,27 +510,31 @@ input.addEventListener(
          * ENTER
          */
 
-        if (event.key === "Enter") {
+        if (
+            event.key === "Enter"
+        ) {
 
             const command =
                 input.value;
 
             input.value = "";
 
-            executeCommand(command);
+            runCommand(command);
 
             return;
         }
 
 
         /*
-         * ARROW UP
+         * UP
          */
 
-        if (event.key === "ArrowUp") {
+        if (
+            event.key === "ArrowUp"
+        ) {
 
             if (
-                commandHistory.length === 0
+                history.length === 0
             ) {
                 return;
             }
@@ -462,7 +542,7 @@ input.addEventListener(
 
             if (
                 historyIndex <
-                commandHistory.length - 1
+                history.length - 1
             ) {
 
                 historyIndex++;
@@ -470,8 +550,8 @@ input.addEventListener(
 
 
             input.value =
-                commandHistory[
-                    commandHistory.length -
+                history[
+                    history.length -
                     1 -
                     historyIndex
                 ];
@@ -483,18 +563,22 @@ input.addEventListener(
 
 
         /*
-         * ARROW DOWN
+         * DOWN
          */
 
-        if (event.key === "ArrowDown") {
+        if (
+            event.key === "ArrowDown"
+        ) {
 
-            if (historyIndex > 0) {
+            if (
+                historyIndex > 0
+            ) {
 
                 historyIndex--;
 
                 input.value =
-                    commandHistory[
-                        commandHistory.length -
+                    history[
+                        history.length -
                         1 -
                         historyIndex
                     ];
@@ -505,6 +589,7 @@ input.addEventListener(
 
                 input.value = "";
             }
+
 
             event.preventDefault();
 
@@ -524,29 +609,30 @@ input.addEventListener(
             output.innerHTML = "";
 
             event.preventDefault();
-
-            return;
         }
+
     }
 );
 
 
 /*
- * KEEP INPUT FOCUSED
+ * FOCUS TERMINAL
  */
 
 terminal.addEventListener(
     "click",
     function() {
 
-        input.focus();
+        if (!input.disabled) {
+            input.focus();
+        }
 
     }
 );
 
 
 /*
- * START BASHKIT
+ * START
  */
 
 start();
