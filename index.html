@@ -46,17 +46,14 @@ import {
 import {
     initBashkit,
     Bash
-} from "https://esm.sh/@everruns/bashkit-wasm";
+} from "https://esm.sh/@everruns/bashkit-wasm@0.18.0";
 
 
 /* =========================================================
    XTERM
 ========================================================= */
 
-const terminalElement =
-    document.getElementById("terminal");
-
-const term =
+const terminal =
     new Terminal({
         cursorBlink: true,
         cursorStyle: "block",
@@ -92,23 +89,26 @@ const term =
         }
     });
 
-const fitAddon =
+
+const fit =
     new FitAddon();
 
-term.loadAddon(fitAddon);
+terminal.loadAddon(fit);
 
-term.open(terminalElement);
+terminal.open(
+    document.getElementById("terminal")
+);
 
-fitAddon.fit();
+fit.fit();
 
 window.addEventListener(
     "resize",
-    () => fitAddon.fit()
+    () => fit.fit()
 );
 
 
 /* =========================================================
-   BASH
+   STATE
 ========================================================= */
 
 let bash = null;
@@ -123,38 +123,16 @@ let historyIndex = -1;
 
 let currentDirectory = "~";
 
-let saveTimer = null;
+let commandRunning = false;
 
 
 /* =========================================================
    OPFS
-=========================================================
-
-   Browser storage layout:
-
-   OPFS
-   └── bashkit-sandbox
-       ├── manifest.json
-       └── files
-           ├── home/
-           │   └── user/
-           │       └── ...
-           └── ...
 ========================================================= */
 
-const OPFS_ROOT =
-    "bashkit-sandbox";
+const OPFS_DIRECTORY =
+    "bashkit-linux-sandbox";
 
-const MANIFEST_FILE =
-    "manifest.json";
-
-const FILES_DIRECTORY =
-    "files";
-
-
-/* =========================================================
-   OPFS HELPERS
-========================================================= */
 
 async function getOPFSRoot() {
 
@@ -164,7 +142,7 @@ async function getOPFSRoot() {
     ) {
 
         throw new Error(
-            "This browser does not support the Origin Private File System (OPFS)."
+            "This browser does not support OPFS."
         );
     }
 
@@ -172,7 +150,7 @@ async function getOPFSRoot() {
 }
 
 
-async function getSandboxDirectory(
+async function getSandboxRoot(
     create = true
 ) {
 
@@ -180,97 +158,10 @@ async function getSandboxDirectory(
         await getOPFSRoot();
 
     return await root.getDirectoryHandle(
-        OPFS_ROOT,
+        OPFS_DIRECTORY,
         {
             create
         }
-    );
-}
-
-
-async function getFilesDirectory(
-    create = true
-) {
-
-    const sandbox =
-        await getSandboxDirectory(
-            create
-        );
-
-    return await sandbox.getDirectoryHandle(
-        FILES_DIRECTORY,
-        {
-            create
-        }
-    );
-}
-
-
-/* =========================================================
-   BASE64
-========================================================= */
-
-function stringToBase64(
-    value
-) {
-
-    const bytes =
-        new TextEncoder().encode(
-            value
-        );
-
-    let binary = "";
-
-    const chunkSize = 0x8000;
-
-    for (
-        let i = 0;
-        i < bytes.length;
-        i += chunkSize
-    ) {
-
-        const chunk =
-            bytes.subarray(
-                i,
-                Math.min(
-                    i + chunkSize,
-                    bytes.length
-                )
-            );
-
-        binary += String.fromCharCode(
-            ...chunk
-        );
-    }
-
-    return btoa(binary);
-}
-
-
-function base64ToString(
-    value
-) {
-
-    const binary =
-        atob(value);
-
-    const bytes =
-        new Uint8Array(
-            binary.length
-        );
-
-    for (
-        let i = 0;
-        i < binary.length;
-        i++
-    ) {
-
-        bytes[i] =
-            binary.charCodeAt(i);
-    }
-
-    return new TextDecoder().decode(
-        bytes
     );
 }
 
@@ -279,19 +170,15 @@ function base64ToString(
    PATH HELPERS
 ========================================================= */
 
-function normalizeVFSPath(
-    path
-) {
+function normalizePath(path) {
 
     if (!path) {
         return "/";
     }
 
     path =
-        path.replace(
-            /\\/g,
-            "/"
-        );
+        String(path)
+            .replace(/\\/g, "/");
 
     if (
         !path.startsWith("/")
@@ -301,72 +188,78 @@ function normalizeVFSPath(
             "/" + path;
     }
 
-    path =
-        path.replace(
-            /\/+/g,
-            "/"
-        );
+    const parts = [];
 
-    if (
-        path.length > 1 &&
-        path.endsWith("/")
+    for (
+        const part
+        of path.split("/")
     ) {
 
-        path =
-            path.slice(
-                0,
-                -1
+        if (
+            !part ||
+            part === "."
+        ) {
+
+            continue;
+        }
+
+        if (
+            part === ".."
+        ) {
+
+            parts.pop();
+
+        } else {
+
+            parts.push(
+                part
             );
+        }
     }
 
-    return path;
+    return "/" +
+        parts.join("/");
 }
 
 
-function pathParts(
-    path
-) {
+function parts(path) {
 
-    path =
-        normalizeVFSPath(
-            path
-        );
+    const normalized =
+        normalizePath(path);
 
-    return path
-        .split("/")
-        .filter(
-            part => part.length > 0
-        );
+    if (
+        normalized === "/"
+    ) {
+
+        return [];
+    }
+
+    return normalized
+        .slice(1)
+        .split("/");
 }
 
 
 /* =========================================================
-   OPFS PATH ACCESS
+   OPFS DIRECTORY LOOKUP
 ========================================================= */
 
-async function getOPFSDirectoryForPath(
+async function getDirectory(
     path,
-    create = true
+    create = false
 ) {
 
-    const parts =
-        pathParts(path);
-
     const root =
-        await getFilesDirectory(
+        await getSandboxRoot(
             create
         );
 
     let directory =
         root;
 
-    /*
-     * All VFS paths are stored beneath
-     * the OPFS "files" directory.
-     */
-
     for (
-        const part of parts
+        const part
+        of parts(path)
     ) {
 
         directory =
@@ -382,33 +275,30 @@ async function getOPFSDirectoryForPath(
 }
 
 
-async function getOPFSParentDirectory(
+async function getParent(
     path,
-    create = true
+    create = false
 ) {
 
     const normalized =
-        normalizeVFSPath(
-            path
-        );
+        normalizePath(path);
 
-    const parts =
-        pathParts(
-            normalized
-        );
+    const pathParts =
+        parts(normalized);
 
-    const filename =
-        parts.pop();
+    const name =
+        pathParts.pop();
 
 
     let directory =
-        await getFilesDirectory(
+        await getSandboxRoot(
             create
         );
 
 
     for (
-        const part of parts
+        const part
+        of pathParts
     ) {
 
         directory =
@@ -423,265 +313,145 @@ async function getOPFSParentDirectory(
 
     return {
         directory,
-        filename
+        name
     };
 }
 
 
 /* =========================================================
-   SAVE ONE FILE TO OPFS
+   ERROR HELPERS
 ========================================================= */
 
-async function saveFileToOPFS(
-    path,
-    content
+function fsError(
+    code,
+    message
 ) {
 
-    const {
-        directory,
-        filename
-    } =
-        await getOPFSParentDirectory(
-            path,
-            true
+    const error =
+        new Error(
+            message
         );
 
+    error.code =
+        code;
 
-    const file =
-        await directory.getFileHandle(
-            filename,
-            {
-                create: true
-            }
-        );
-
-
-    const writable =
-        await file.createWritable();
-
-
-    await writable.write(
-        content
-    );
-
-
-    await writable.close();
+    return error;
 }
 
 
 /* =========================================================
-   READ ONE FILE FROM OPFS
+   HOST FILESYSTEM
 ========================================================= */
 
-async function readFileFromOPFS(
-    path
-) {
-
-    const {
-        directory,
-        filename
-    } =
-        await getOPFSParentDirectory(
-            path,
-            false
-        );
+const persistentFS = {
 
 
-    const file =
-        await directory.getFileHandle(
-            filename
-        );
+    /* -----------------------------------------
+       READ
+    ----------------------------------------- */
 
+    async read(path) {
 
-    const data =
-        await file.getFile();
-
-
-    return await data.text();
-}
-
-
-/* =========================================================
-   DELETE OPFS TREE
-========================================================= */
-
-async function deleteOPFSDirectory(
-    directory
-) {
-
-    const entries = [];
-
-    for await (
-        const [name, handle]
-        of directory.entries()
-    ) {
-
-        entries.push({
-            name,
-            handle
-        });
-    }
-
-
-    for (
-        const entry
-        of entries
-    ) {
-
-        if (
-            entry.handle.kind === "directory"
-        ) {
-
-            await deleteOPFSDirectory(
-                entry.handle
-            );
-
-            await directory.removeEntry(
-                entry.name,
-                {
-                    recursive: true
-                }
-            );
-
-        } else {
-
-            await directory.removeEntry(
-                entry.name
-            );
-        }
-    }
-}
-
-
-/* =========================================================
-   GET ALL BASHKIT FILES
-========================================================= */
-
-function collectVFSFiles(
-    path = "/",
-    files = []
-) {
-
-    const entries =
-        bash.readDir(
-            path
-        );
-
-
-    for (
-        const entry
-        of entries
-    ) {
-
-        const childPath =
-            path === "/"
-                ? "/" + entry.name
-                : path + "/" + entry.name;
-
-
-        if (
-            entry.metadata.fileType ===
-            "directory"
-        ) {
-
-            collectVFSFiles(
-                childPath,
-                files
-            );
-
-        } else {
-
-            files.push(
-                childPath
-            );
-        }
-    }
-
-
-    return files;
-}
-
-
-/* =========================================================
-   SAVE BASHKIT FILESYSTEM
-========================================================= */
-
-async function saveFilesystem() {
-
-    if (!bash) {
-        return false;
-    }
-
-
-    try {
-
-        const files =
-            collectVFSFiles(
-                "/"
-            );
-
-
-        const manifest = {
-            version: 1,
-            savedAt:
-                new Date().toISOString(),
-            files: []
-        };
+        const normalized =
+            normalizePath(path);
 
 
         /*
-         * Save every file from Bashkit's
-         * virtual filesystem into OPFS.
+         * /dev/null
          */
 
-        for (
-            const path
-            of files
+        if (
+            normalized === "/dev/null"
         ) {
 
-            try {
-
-                const content =
-                    bash.readFile(
-                        path
-                    );
-
-
-                await saveFileToOPFS(
-                    path,
-                    content
-                );
-
-
-                manifest.files.push({
-                    path,
-                    encoding: "utf-8"
-                });
-
-            } catch (error) {
-
-                console.warn(
-                    "Could not save:",
-                    path,
-                    error
-                );
-            }
+            return new Uint8Array();
         }
 
 
+        try {
+
+            const {
+                directory,
+                name
+            } =
+                await getParent(
+                    normalized,
+                    false
+                );
+
+
+            const handle =
+                await directory.getFileHandle(
+                    name
+                );
+
+
+            const file =
+                await handle.getFile();
+
+
+            return new Uint8Array(
+                await file.arrayBuffer()
+            );
+
+
+        } catch (error) {
+
+            if (
+                error.name ===
+                "NotFoundError"
+            ) {
+
+                throw fsError(
+                    "ENOENT",
+                    `No such file or directory: ${normalized}`
+                );
+            }
+
+
+            throw error;
+        }
+    },
+
+
+    /* -----------------------------------------
+       WRITE
+    ----------------------------------------- */
+
+    async write(
+        path,
+        bytes
+    ) {
+
+        const normalized =
+            normalizePath(path);
+
+
         /*
-         * Save the manifest.
+         * /dev/null discards writes.
          */
 
-        const sandbox =
-            await getSandboxDirectory(
+        if (
+            normalized === "/dev/null"
+        ) {
+
+            return;
+        }
+
+
+        const {
+            directory,
+            name
+        } =
+            await getParent(
+                normalized,
                 true
             );
 
 
-        const manifestHandle =
-            await sandbox.getFileHandle(
-                MANIFEST_FILE,
+        const handle =
+            await directory.getFileHandle(
+                name,
                 {
                     create: true
                 }
@@ -689,207 +459,382 @@ async function saveFilesystem() {
 
 
         const writable =
-            await manifestHandle.createWritable();
+            await handle.createWritable();
 
 
         await writable.write(
-            JSON.stringify(
-                manifest,
-                null,
-                2
-            )
+            bytes
         );
 
 
         await writable.close();
+    },
 
 
-        return true;
+    /* -----------------------------------------
+       MKDIR
+    ----------------------------------------- */
 
-    } catch (error) {
+    async mkdir(
+        path,
+        recursive = false
+    ) {
 
-        console.error(
-            "OPFS save failed:",
-            error
-        );
-
-        return false;
-    }
-}
+        const normalized =
+            normalizePath(path);
 
 
-/* =========================================================
-   LOAD BASHKIT FILESYSTEM
-========================================================= */
+        if (
+            normalized === "/"
+        ) {
 
-async function loadFilesystem() {
+            return;
+        }
 
-    try {
 
-        const sandbox =
-            await getSandboxDirectory(
+        try {
+
+            await getDirectory(
+                normalized,
+                recursive
+            );
+
+        } catch (error) {
+
+            if (
+                error.name ===
+                "NotFoundError"
+            ) {
+
+                throw fsError(
+                    "ENOENT",
+                    `No such file or directory: ${normalized}`
+                );
+            }
+
+
+            if (
+                error.name ===
+                "TypeMismatchError"
+            ) {
+
+                throw fsError(
+                    "EEXIST",
+                    `File exists: ${normalized}`
+                );
+            }
+
+
+            throw error;
+        }
+    },
+
+
+    /* -----------------------------------------
+       REMOVE
+    ----------------------------------------- */
+
+    async remove(
+        path,
+        recursive = false
+    ) {
+
+        const normalized =
+            normalizePath(path);
+
+
+        if (
+            normalized === "/"
+        ) {
+
+            throw fsError(
+                "EPERM",
+                "Cannot remove filesystem root"
+            );
+        }
+
+
+        const {
+            directory,
+            name
+        } =
+            await getParent(
+                normalized,
                 false
             );
 
 
-        const manifestHandle =
-            await sandbox.getFileHandle(
-                MANIFEST_FILE
+        try {
+
+            await directory.removeEntry(
+                name,
+                {
+                    recursive
+                }
             );
 
+        } catch (error) {
 
-        const manifestFile =
-            await manifestHandle.getFile();
+            if (
+                error.name ===
+                "NotFoundError"
+            ) {
+
+                throw fsError(
+                    "ENOENT",
+                    `No such file or directory: ${normalized}`
+                );
+            }
 
 
-        const manifestText =
-            await manifestFile.text();
+            if (
+                error.name ===
+                "InvalidModificationError"
+            ) {
+
+                throw fsError(
+                    "ENOTEMPTY",
+                    `Directory not empty: ${normalized}`
+                );
+            }
 
 
-        const manifest =
-            JSON.parse(
-                manifestText
-            );
+            throw error;
+        }
+    },
+
+
+    /* -----------------------------------------
+       STAT
+    ----------------------------------------- */
+
+    async stat(path) {
+
+        const normalized =
+            normalizePath(path);
 
 
         if (
-            !manifest.files ||
-            !Array.isArray(
-                manifest.files
-            )
+            normalized === "/"
         ) {
 
-            return false;
+            return {
+                type: "dir"
+            };
         }
 
 
         /*
-         * Restore every saved file
-         * into Bashkit's VFS.
+         * /dev/null
          */
 
-        for (
-            const item
-            of manifest.files
+        if (
+            normalized === "/dev/null"
         ) {
+
+            return {
+                type: "file",
+                size: 0
+            };
+        }
+
+
+        const {
+            directory,
+            name
+        } =
+            await getParent(
+                normalized,
+                false
+            );
+
+
+        try {
+
+            const file =
+                await directory.getFileHandle(
+                    name
+                );
+
+
+            const data =
+                await file.getFile();
+
+
+            return {
+                type: "file",
+                size: data.size,
+                mtimeMs: data.lastModified
+            };
+
+
+        } catch (fileError) {
 
             try {
 
-                const content =
-                    await readFileFromOPFS(
-                        item.path
-                    );
-
-
-                bash.writeFile(
-                    item.path,
-                    content
+                await directory.getDirectoryHandle(
+                    name
                 );
 
-            } catch (error) {
 
-                console.warn(
-                    "Could not restore:",
-                    item.path,
-                    error
+                return {
+                    type: "dir"
+                };
+
+
+            } catch {
+
+                throw fsError(
+                    "ENOENT",
+                    `No such file or directory: ${normalized}`
                 );
             }
         }
+    },
 
 
-        return true;
+    /* -----------------------------------------
+       READ DIRECTORY
+    ----------------------------------------- */
 
-    } catch (error) {
+    async readDir(path) {
 
-        /*
-         * FileNotFound means this is simply
-         * the first visit.
-         */
+        const normalized =
+            normalizePath(path);
 
-        if (
-            error.name ===
-            "NotFoundError"
+
+        const directory =
+            await getDirectory(
+                normalized,
+                false
+            );
+
+
+        const result = [];
+
+
+        for await (
+            const [
+                name,
+                handle
+            ]
+            of directory.entries()
         ) {
 
-            return false;
+            if (
+                handle.kind ===
+                "directory"
+            ) {
+
+                result.push({
+                    name,
+                    type: "dir"
+                });
+
+            } else {
+
+                try {
+
+                    const file =
+                        await handle.getFile();
+
+
+                    result.push({
+                        name,
+                        type: "file",
+                        size: file.size,
+                        mtimeMs:
+                            file.lastModified
+                    });
+
+                } catch {
+
+                    result.push({
+                        name,
+                        type: "file"
+                    });
+                }
+            }
         }
 
 
-        console.error(
-            "OPFS restore failed:",
-            error
-        );
+        return result;
+    },
 
 
-        return false;
-    }
-}
+    /* -----------------------------------------
+       EXISTS
+    ----------------------------------------- */
 
+    async exists(path) {
 
-/* =========================================================
-   DELETE SAVED SANDBOX
-========================================================= */
+        const normalized =
+            normalizePath(path);
 
-async function deleteSavedSandbox() {
-
-    try {
-
-        const root =
-            await getOPFSRoot();
-
-
-        await root.removeEntry(
-            OPFS_ROOT,
-            {
-                recursive: true
-            }
-        );
-
-
-        return true;
-
-    } catch (error) {
 
         if (
-            error.name ===
-            "NotFoundError"
+            normalized === "/dev/null"
         ) {
 
             return true;
         }
 
 
-        console.error(
-            "OPFS delete failed:",
-            error
-        );
+        try {
 
+            await this.stat(
+                normalized
+            );
 
-        return false;
+            return true;
+
+        } catch {
+
+            return false;
+        }
     }
-}
+};
 
 
 /* =========================================================
-   AUTO SAVE
+   INITIALIZE STORAGE
 ========================================================= */
 
-function scheduleSave() {
+async function initializeStorage() {
 
-    clearTimeout(
-        saveTimer
+    /*
+     * Create the persistent sandbox.
+     */
+
+    await getSandboxRoot(
+        true
     );
 
 
-    saveTimer =
-        setTimeout(
-            async () => {
+    /*
+     * Create the standard Linux
+     * directories we need.
+     */
 
-                await saveFilesystem();
+    await persistentFS.mkdir(
+        "/home",
+        true
+    );
 
-            },
-            300
-        );
+    await persistentFS.mkdir(
+        "/home/user",
+        true
+    );
+
+    await persistentFS.mkdir(
+        "/tmp",
+        true
+    );
+
+    await persistentFS.mkdir(
+        "/dev",
+        true
+    );
 }
 
 
@@ -897,7 +842,7 @@ function scheduleSave() {
    PROMPT
 ========================================================= */
 
-function updatePrompt() {
+async function updatePrompt() {
 
     if (!bash) {
         return;
@@ -906,8 +851,13 @@ function updatePrompt() {
 
     try {
 
+        /*
+         * pwd itself uses the persistent
+         * filesystem and current Bash state.
+         */
+
         const result =
-            bash.executeSync(
+            await bash.execute(
                 "pwd"
             );
 
@@ -951,7 +901,7 @@ function updatePrompt() {
 
 function writePrompt() {
 
-    term.write(
+    terminal.write(
         "\x1b[32muser@sandbox\x1b[0m:" +
         "\x1b[36m" +
         currentDirectory +
@@ -974,17 +924,15 @@ function writeOutput(
 
 
     text =
-        text.replace(
-            /\r\n/g,
-            "\n"
-        );
-
-
-    text =
-        text.replace(
-            /\r/g,
-            "\n"
-        );
+        String(text)
+            .replace(
+                /\r\n/g,
+                "\n"
+            )
+            .replace(
+                /\r/g,
+                "\n"
+            );
 
 
     const lines =
@@ -998,10 +946,10 @@ function writeOutput(
     ) {
 
         if (
-            lines[i].length > 0
+            lines[i].length
         ) {
 
-            term.write(
+            terminal.write(
                 lines[i]
             );
         }
@@ -1012,7 +960,7 @@ function writeOutput(
             lines.length - 1
         ) {
 
-            term.write(
+            terminal.write(
                 "\r\n"
             );
         }
@@ -1022,124 +970,105 @@ function writeOutput(
 
 function newLine() {
 
-    term.write(
+    terminal.write(
         "\r\n"
     );
 }
 
 
 /* =========================================================
-   INITIALIZE
+   HELP
 ========================================================= */
 
-async function start() {
+function showHelp() {
 
-    term.write(
-        "\x1b[90mStarting Browser Linux Sandbox...\x1b[0m\r\n"
+    newLine();
+
+    terminal.writeln(
+        "\x1b[36mBrowser Linux Sandbox\x1b[0m"
     );
+
+    terminal.writeln("");
+
+    terminal.writeln(
+        "  help       Show this help"
+    );
+
+    terminal.writeln(
+        "  save       Files are saved automatically"
+    );
+
+    terminal.writeln(
+        "  reset      Delete the persistent filesystem"
+    );
+
+    terminal.writeln(
+        "  clear      Clear the terminal"
+    );
+
+    terminal.writeln("");
+
+    terminal.writeln(
+        "\x1b[90mThe filesystem is stored in this browser using OPFS.\x1b[0m"
+    );
+
+    terminal.writeln(
+        "\x1b[90mIt is separate from the real computer filesystem.\x1b[0m"
+    );
+
+    terminal.writeln("");
+
+    writePrompt();
+}
+
+
+/* =========================================================
+   RESET
+========================================================= */
+
+async function resetSandbox() {
+
+    newLine();
+
+    terminal.writeln(
+        "\x1b[33mDeleting browser sandbox...\x1b[0m"
+    );
+
+
+    const root =
+        await getOPFSRoot();
 
 
     try {
 
-        await initBashkit();
-
-
-        bash =
-            new Bash({
-                username: "user",
-                hostname: "sandbox",
-                cwd: "/home/user",
-
-                env: {
-                    USER: "user",
-                    HOME: "/home/user",
-                    SHELL: "/bin/bash"
-                }
-            });
-
-
-        /*
-         * Create basic directories.
-         */
-
-        bash.executeSync(
-            "mkdir -p /home/user"
+        await root.removeEntry(
+            OPFS_DIRECTORY,
+            {
+                recursive: true
+            }
         );
-
-
-        bash.executeSync(
-            "cd /home/user"
-        );
-
-
-        /*
-         * Restore files from OPFS.
-         */
-
-        const restored =
-            await loadFilesystem();
-
-
-        if (restored) {
-
-            term.write(
-                "\x1b[32mSandbox files restored from browser storage.\x1b[0m\r\n"
-            );
-
-        } else {
-
-            await saveFilesystem();
-
-
-            term.write(
-                "\x1b[32mNew sandbox created.\x1b[0m\r\n"
-            );
-        }
-
-
-        updatePrompt();
-
-
-        ready = true;
-
-
-        term.write(
-            "\x1b[90mFiles are automatically saved in this browser.\x1b[0m\r\n"
-        );
-
-
-        term.write(
-            "\x1b[90mType \"help\" for commands.\x1b[0m\r\n\r\n"
-        );
-
-
-        writePrompt();
-
-
-        term.focus();
-
 
     } catch (error) {
 
-        term.write(
-            "\r\n\x1b[31mBashkit initialization failed.\x1b[0m\r\n"
-        );
+        if (
+            error.name !==
+            "NotFoundError"
+        ) {
 
-
-        term.write(
-            "\x1b[31m" +
-            error.name +
-            ": " +
-            error.message +
-            "\x1b[0m\r\n"
-        );
-
-
-        console.error(
-            "Bashkit initialization error:",
-            error
-        );
+            throw error;
+        }
     }
+
+
+    terminal.writeln(
+        "\x1b[32mSandbox deleted.\x1b[0m"
+    );
+
+    terminal.writeln(
+        "\x1b[90mReload the page to create a new sandbox.\x1b[0m"
+    );
+
+    writePrompt();
 }
 
 
@@ -1147,7 +1076,7 @@ async function start() {
    SPECIAL COMMANDS
 ========================================================= */
 
-async function specialCommand(
+async function handleSpecialCommand(
     command
 ) {
 
@@ -1155,40 +1084,24 @@ async function specialCommand(
         command.trim();
 
 
-    /* HELP */
-
     if (
         trimmed === "help"
     ) {
 
-        newLine();
+        showHelp();
 
-        term.writeln(
-            "\x1b[36mBrowser Linux Sandbox\x1b[0m"
-        );
+        return true;
+    }
 
-        term.writeln(
-            ""
-        );
 
-        term.writeln(
-            "  help       Show this help"
-        );
+    if (
+        trimmed === "clear"
+    ) {
 
-        term.writeln(
-            "  save       Save files now"
-        );
+        terminal.clear();
 
-        term.writeln(
-            "  reset      Delete saved files"
-        );
-
-        term.writeln(
-            "  clear      Clear terminal"
-        );
-
-        term.writeln(
-            ""
+        terminal.write(
+            "\x1b[2J\x1b[H"
         );
 
         writePrompt();
@@ -1196,8 +1109,6 @@ async function specialCommand(
         return true;
     }
 
-
-    /* SAVE */
 
     if (
         trimmed === "save"
@@ -1205,24 +1116,9 @@ async function specialCommand(
 
         newLine();
 
-
-        const saved =
-            await saveFilesystem();
-
-
-        if (saved) {
-
-            term.writeln(
-                "\x1b[32mFiles saved to browser storage.\x1b[0m"
-            );
-
-        } else {
-
-            term.writeln(
-                "\x1b[31mCould not save files.\x1b[0m"
-            );
-        }
-
+        terminal.writeln(
+            "\x1b[32mFilesystem is continuously stored in browser OPFS.\x1b[0m"
+        );
 
         writePrompt();
 
@@ -1230,19 +1126,17 @@ async function specialCommand(
     }
 
 
-    /* RESET */
-
     if (
         trimmed === "reset"
     ) {
 
         newLine();
 
-        term.writeln(
-            "\x1b[33mThis will delete the saved browser filesystem.\x1b[0m"
+        terminal.writeln(
+            "\x1b[33mThis deletes the saved browser filesystem.\x1b[0m"
         );
 
-        term.writeln(
+        terminal.writeln(
             "\x1b[33mType \"reset yes\" to confirm.\x1b[0m"
         );
 
@@ -1252,56 +1146,11 @@ async function specialCommand(
     }
 
 
-    /* RESET YES */
-
     if (
         trimmed === "reset yes"
     ) {
 
-        newLine();
-
-
-        const deleted =
-            await deleteSavedSandbox();
-
-
-        if (deleted) {
-
-            term.writeln(
-                "\x1b[32mSaved browser filesystem deleted.\x1b[0m"
-            );
-
-            term.writeln(
-                "\x1b[90mReload the page to create a fresh sandbox.\x1b[0m"
-            );
-
-        } else {
-
-            term.writeln(
-                "\x1b[31mCould not delete saved filesystem.\x1b[0m"
-            );
-        }
-
-
-        writePrompt();
-
-        return true;
-    }
-
-
-    /* CLEAR */
-
-    if (
-        trimmed === "clear"
-    ) {
-
-        term.clear();
-
-        term.write(
-            "\x1b[2J\x1b[H"
-        );
-
-        writePrompt();
+        await resetSandbox();
 
         return true;
     }
@@ -1312,21 +1161,21 @@ async function specialCommand(
 
 
 /* =========================================================
-   EXECUTE
+   EXECUTE COMMAND
 ========================================================= */
 
 async function executeCommand(
     command
 ) {
 
-    if (!bash) {
+    if (
+        !bash ||
+        commandRunning
+    ) {
+
         return;
     }
 
-
-    /*
-     * Empty command.
-     */
 
     if (
         command.trim() === ""
@@ -1339,10 +1188,6 @@ async function executeCommand(
         return;
     }
 
-
-    /*
-     * History.
-     */
 
     history.push(
         command
@@ -1357,15 +1202,12 @@ async function executeCommand(
     }
 
 
-    historyIndex = -1;
+    historyIndex =
+        -1;
 
-
-    /*
-     * Built-in commands.
-     */
 
     if (
-        await specialCommand(
+        await handleSpecialCommand(
             command
         )
     ) {
@@ -1374,24 +1216,27 @@ async function executeCommand(
     }
 
 
+    commandRunning =
+        true;
+
+
     try {
 
+        /*
+         * IMPORTANT:
+         *
+         * Because OPFS is asynchronous,
+         * we use execute(), NOT executeSync().
+         */
+
         const result =
-            bash.executeSync(
+            await bash.execute(
                 command
             );
 
 
-        /*
-         * Finish command line.
-         */
-
         newLine();
 
-
-        /*
-         * STDOUT.
-         */
 
         if (
             result.stdout
@@ -1402,10 +1247,6 @@ async function executeCommand(
             );
         }
 
-
-        /*
-         * STDERR.
-         */
 
         if (
             result.stderr
@@ -1420,39 +1261,30 @@ async function executeCommand(
             }
 
 
-            term.write(
+            terminal.write(
                 "\x1b[31m"
             );
-
 
             writeOutput(
                 result.stderr
             );
 
-
-            term.write(
+            terminal.write(
                 "\x1b[0m"
             );
         }
 
 
         /*
-         * Keep prompt separated.
+         * The current working directory
+         * belongs to the Bash session, so
+         * update the prompt after every command.
          */
+
+        await updatePrompt();
+
 
         newLine();
-
-
-        updatePrompt();
-
-
-        /*
-         * Save filesystem after
-         * every successful command.
-         */
-
-        scheduleSave();
-
 
         writePrompt();
 
@@ -1462,29 +1294,160 @@ async function executeCommand(
         newLine();
 
 
-        term.write(
-            "\x1b[31m" +
-            error.message +
+        terminal.write(
+            "\x1b[31m"
+        );
+
+
+        terminal.write(
+            error.message ||
+            String(error)
+        );
+
+
+        terminal.write(
             "\x1b[0m"
         );
 
 
         newLine();
 
-
         writePrompt();
+
+    } finally {
+
+        commandRunning =
+            false;
     }
 }
 
 
 /* =========================================================
-   KEYBOARD INPUT
+   HISTORY
 ========================================================= */
 
-term.onData(
+function historyUp() {
+
+    if (
+        history.length === 0
+    ) {
+
+        return;
+    }
+
+
+    if (
+        historyIndex === -1
+    ) {
+
+        historyIndex =
+            history.length - 1;
+
+    } else if (
+        historyIndex > 0
+    ) {
+
+        historyIndex--;
+    }
+
+
+    replaceInput(
+        history[
+            historyIndex
+        ]
+    );
+}
+
+
+function historyDown() {
+
+    if (
+        historyIndex === -1
+    ) {
+
+        return;
+    }
+
+
+    if (
+        historyIndex <
+        history.length - 1
+    ) {
+
+        historyIndex++;
+
+
+        replaceInput(
+            history[
+                historyIndex
+            ]
+        );
+
+    } else {
+
+        historyIndex =
+            -1;
+
+
+        replaceInput(
+            ""
+        );
+    }
+}
+
+
+function replaceInput(
+    text
+) {
+
+    while (
+        inputBuffer.length > 0
+    ) {
+
+        inputBuffer =
+            inputBuffer.slice(
+                0,
+                -1
+            );
+
+
+        terminal.write(
+            "\b \b"
+        );
+    }
+
+
+    inputBuffer =
+        text;
+
+
+    terminal.write(
+        text
+    );
+}
+
+
+/* =========================================================
+   TERMINAL INPUT
+========================================================= */
+
+terminal.onData(
     async data => {
 
         if (!ready) {
+            return;
+        }
+
+
+        /*
+         * Do not accept another command
+         * while the previous command is running.
+         */
+
+        if (
+            commandRunning
+        ) {
+
             return;
         }
 
@@ -1537,7 +1500,7 @@ term.onData(
                     );
 
 
-                term.write(
+                terminal.write(
                     "\b \b"
                 );
             }
@@ -1555,7 +1518,7 @@ term.onData(
             data === "\x03"
         ) {
 
-            term.write(
+            terminal.write(
                 "^C"
             );
 
@@ -1586,10 +1549,10 @@ term.onData(
             data === "\x0c"
         ) {
 
-            term.clear();
+            terminal.clear();
 
 
-            term.write(
+            terminal.write(
                 "\x1b[2J\x1b[H"
             );
 
@@ -1630,7 +1593,7 @@ term.onData(
 
 
         /*
-         * Ignore escape sequences.
+         * Ignore other ANSI escape sequences.
          */
 
         if (
@@ -1662,7 +1625,7 @@ term.onData(
                 character;
 
 
-            term.write(
+            terminal.write(
                 character
             );
         }
@@ -1671,120 +1634,183 @@ term.onData(
 
 
 /* =========================================================
-   HISTORY UP
+   START
 ========================================================= */
 
-function historyUp() {
+async function start() {
 
-    if (
-        history.length === 0
-    ) {
-
-        return;
-    }
-
-
-    if (
-        historyIndex === -1
-    ) {
-
-        historyIndex =
-            history.length - 1;
-
-    } else if (
-        historyIndex > 0
-    ) {
-
-        historyIndex--;
-    }
-
-
-    replaceInput(
-        history[
-            historyIndex
-        ]
+    terminal.write(
+        "\x1b[90mStarting Browser Linux Sandbox...\x1b[0m\r\n"
     );
-}
 
 
-/* =========================================================
-   HISTORY DOWN
-========================================================= */
+    try {
 
-function historyDown() {
+        /*
+         * Initialize Bashkit WASM.
+         */
 
-    if (
-        historyIndex === -1
-    ) {
-
-        return;
-    }
+        await initBashkit();
 
 
-    if (
-        historyIndex <
-        history.length - 1
-    ) {
+        /*
+         * Prepare persistent browser storage.
+         */
 
-        historyIndex++;
+        await initializeStorage();
 
 
-        replaceInput(
-            history[
-                historyIndex
-            ]
+        /*
+         * Create Bashkit with our
+         * persistent OPFS filesystem.
+         */
+
+        bash =
+            new Bash({
+                username: "user",
+                hostname: "sandbox",
+                cwd: "/home/user",
+
+                env: {
+                    USER: "user",
+                    HOME: "/home/user",
+                    SHELL: "/bin/bash",
+                    TERM: "xterm-256color"
+                },
+
+                fs: persistentFS
+            });
+
+
+        /*
+         * Ensure the home directory exists.
+         */
+
+        await bash.execute(
+            "mkdir -p /home/user && cd /home/user"
         );
 
-    } else {
 
-        historyIndex =
-            -1;
+        /*
+         * Check whether files survived
+         * a previous page load.
+         */
 
-
-        replaceInput(
-            ""
-        );
-    }
-}
-
-
-/* =========================================================
-   REPLACE INPUT
-========================================================= */
-
-function replaceInput(
-    text
-) {
-
-    while (
-        inputBuffer.length > 0
-    ) {
-
-        inputBuffer =
-            inputBuffer.slice(
-                0,
-                -1
+        const test =
+            await bash.execute(
+                "ls -la /home/user"
             );
 
 
-        term.write(
-            "\b \b"
+        /*
+         * Make /dev/null available.
+         * The host filesystem handles it
+         * specially without storing it.
+         */
+
+        ready =
+            true;
+
+
+        await updatePrompt();
+
+
+        terminal.write(
+            "\x1b[32mBashkit WASM initialized.\x1b[0m\r\n"
+        );
+
+
+        terminal.write(
+            "\x1b[32mPersistent browser filesystem enabled.\x1b[0m\r\n"
+        );
+
+
+        terminal.write(
+            "\x1b[90mFiles survive page refreshes in this browser.\x1b[0m\r\n"
+        );
+
+
+        terminal.write(
+            "\x1b[90mType \"help\" to get started.\x1b[0m\r\n\r\n"
+        );
+
+
+        /*
+         * Show any existing files if there
+         * are some from an earlier session.
+         */
+
+        if (
+            test.stdout &&
+            test.stdout.trim()
+        ) {
+
+            /*
+             * Don't print the default "." and ".."
+             * style noise; just tell the user the
+             * filesystem was restored.
+             */
+
+            const listing =
+                test.stdout
+                    .split("\n")
+                    .filter(
+                        line =>
+                            line.trim() &&
+                            !line.includes(
+                                "total 0"
+                            )
+                    );
+
+
+            if (
+                listing.length > 0
+            ) {
+
+                terminal.write(
+                    "\x1b[90mExisting sandbox files restored.\x1b[0m\r\n\r\n"
+                );
+            }
+        }
+
+
+        writePrompt();
+
+
+        terminal.focus();
+
+
+    } catch (error) {
+
+        ready =
+            false;
+
+
+        terminal.write(
+            "\r\n\x1b[31mBashkit initialization failed.\x1b[0m\r\n"
+        );
+
+
+        terminal.write(
+            "\x1b[31m" +
+            (
+                error.message ||
+                String(error)
+            ) +
+            "\x1b[0m\r\n"
+        );
+
+
+        console.error(
+            "Bashkit initialization error:",
+            error
         );
     }
-
-
-    inputBuffer =
-        text;
-
-
-    term.write(
-        text
-    );
 }
 
 
 /* =========================================================
-   START
+   RUN
 ========================================================= */
 
 start();
